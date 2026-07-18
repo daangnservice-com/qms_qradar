@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { ClipboardList, Images } from "lucide-react";
 import type { DamageResult } from "@/lib/types";
 import VerdictBadge from "./VerdictBadge";
 
 export default function DamageResultView({ result, files }: { result: DamageResult; files: File[] }) {
   const urls = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
+  useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u)), [urls]);
 
   return (
     <section className="mt-8 space-y-4">

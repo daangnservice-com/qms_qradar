@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ImagePlus, X } from "lucide-react";
 
 const ACCEPT = ".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp";
@@ -24,13 +24,17 @@ export default function DamageUpload({
   const [dragging, setDragging] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
+  const previews = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
+  useEffect(() => () => previews.forEach((u) => URL.revokeObjectURL(u)), [previews]);
+
   function add(incoming: FileList | null) {
     if (!incoming) return;
     const picked = Array.from(incoming);
     const ok = picked.filter(isAllowed);
-    if (ok.length < picked.length) setMsg("jpg/png/webp만 추가돼요.");
-    else setMsg(null);
     const merged = [...files, ...ok].slice(0, max);
+    if (files.length + ok.length > max) setMsg(`최대 ${max}장까지만 추가돼요.`);
+    else if (ok.length < picked.length) setMsg("jpg/png/webp만 추가돼요.");
+    else setMsg(null);
     onFiles(merged);
   }
 
@@ -86,7 +90,7 @@ export default function DamageUpload({
           {files.map((f, i) => (
             <div key={i} className="group relative aspect-square overflow-hidden rounded-xl border border-gray-200">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={URL.createObjectURL(f)} alt={`업로드 ${i + 1}`} className="h-full w-full object-cover" />
+              <img src={previews[i]} alt={`업로드 ${i + 1}`} className="h-full w-full object-cover" />
               <button
                 type="button"
                 onClick={() => onFiles(files.filter((_, j) => j !== i))}

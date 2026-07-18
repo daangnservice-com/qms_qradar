@@ -8,6 +8,7 @@ import DamageResultView from "@/components/damage/DamageResultView";
 
 export default function DamagePage() {
   const [files, setFiles] = useState<File[]>([]);
+  const [submittedFiles, setSubmittedFiles] = useState<File[]>([]);
   const [result, setResult] = useState<DamageResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,10 +19,12 @@ export default function DamagePage() {
     setLoading(true);
     setError(null);
     try {
+      const submitted = files;
       const fd = new FormData();
-      files.forEach((f) => fd.append("images", f));
+      submitted.forEach((f) => fd.append("images", f));
       const res = await fetch("/api/damage", { method: "POST", body: fd });
       if (!res.ok) throw new Error((await res.json()).error ?? "판별에 실패했어요");
+      setSubmittedFiles(submitted);
       setResult(await res.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "판별에 실패했어요");
@@ -69,7 +72,7 @@ export default function DamagePage() {
         </button>
       </form>
 
-      {result && <DamageResultView result={result} files={files} />}
+      {result && <DamageResultView result={result} files={submittedFiles} />}
     </div>
   );
 }
