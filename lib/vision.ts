@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, type Schema } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
-import type { DamageResult, DamageVerdict } from "./types";
+import type { DamageResult, DamageVerdict, BoundingBox } from "./types";
 
 const VERDICTS: DamageVerdict[] = ["파손됨", "정상", "불확실"];
 
@@ -14,6 +14,8 @@ export function buildDamagePrompt(imageCount: number): string {
     "- confidence: 0.0~1.0 확신도.",
     "- summary: 한 줄 종합 소견. '불확실'이면 어떤 사진/각도가 더 필요한지 적으세요.",
     "- findings: 파손 근거 목록(부위 location · 유형 type · 설명 description). '정상'이면 빈 배열.",
+    "- 각 finding에는 그 파손이 보이는 사진 번호 photoIndex(0부터)와 바운딩 박스 box를 함께 넣으세요.",
+    "  box는 정규화 좌표 {ymin, xmin, ymax, xmax}이며 각 값은 0~1000(이미지 좌상단이 0,0, 우하단이 1000,1000). 부위를 특정하기 어려우면 box는 null.",
     "- perPhoto: 각 사진(index는 0부터)마다 코멘트(note).",
     "",
     "모든 텍스트는 한국어로. 반드시 지정된 JSON 스키마로만 응답하세요.",
@@ -30,8 +32,24 @@ const RESPONSE_SCHEMA = {
       type: "array",
       items: {
         type: "object",
-        properties: { location: { type: "string" }, type: { type: "string" }, description: { type: "string" } },
-        required: ["location", "type", "description"],
+        properties: {
+          location: { type: "string" },
+          type: { type: "string" },
+          description: { type: "string" },
+          photoIndex: { type: "integer" },
+          box: {
+            type: "object",
+            nullable: true,
+            properties: {
+              ymin: { type: "integer" },
+              xmin: { type: "integer" },
+              ymax: { type: "integer" },
+              xmax: { type: "integer" },
+            },
+            required: ["ymin", "xmin", "ymax", "xmax"],
+          },
+        },
+        required: ["location", "type", "description", "photoIndex"],
       },
     },
     perPhoto: {
@@ -46,6 +64,14 @@ const RESPONSE_SCHEMA = {
   required: ["verdict", "confidence", "summary", "findings", "perPhoto"],
 } as const;
 
+function parseBox(b: unknown): BoundingBox | null {
+  if (!b || typeof b !== "object") return null;
+  const r = b as Record<string, unknown>;
+  const ymin = Number(r.ymin), xmin = Number(r.xmin), ymax = Number(r.ymax), xmax = Number(r.xmax);
+  if (![ymin, xmin, ymax, xmax].every((n) => Number.isFinite(n))) return null;
+  return { ymin, xmin, ymax, xmax };
+}
+
 export function parseDamageResult(jsonText: string): DamageResult {
   const cleaned = jsonText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const o = JSON.parse(cleaned);
@@ -55,10 +81,12 @@ export function parseDamageResult(jsonText: string): DamageResult {
     confidence: Number(o.confidence ?? 0),
     summary: String(o.summary ?? ""),
     findings: Array.isArray(o.findings)
-      ? o.findings.map((f: { location: string; type: string; description: string }) => ({
+      ? o.findings.map((f: { location: string; type: string; description: string; photoIndex?: number; box?: unknown }) => ({
           location: String(f.location),
           type: String(f.type),
           description: String(f.description),
+          photoIndex: Number.isFinite(Number(f.photoIndex)) ? Number(f.photoIndex) : 0,
+          box: parseBox(f.box),
         }))
       : [],
     perPhoto: Array.isArray(o.perPhoto)

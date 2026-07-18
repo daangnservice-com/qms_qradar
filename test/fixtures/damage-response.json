@@ -3,7 +3,7 @@
   "confidence": 0.87,
   "summary": "후면 우측 하단 모서리에 긁힘이 확인됨",
   "findings": [
-    { "location": "우측 하단 모서리", "type": "긁힘", "description": "3cm 가량 긁힌 자국" }
+    { "location": "우측 하단 모서리", "type": "긁힘", "description": "3cm 가량 긁힌 자국", "photoIndex": 1, "box": { "ymin": 720, "xmin": 640, "ymax": 880, "xmax": 900 } }
   ],
   "perPhoto": [
     { "index": 0, "note": "정면 — 특이사항 없음" },

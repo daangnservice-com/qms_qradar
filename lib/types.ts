@@ -19,7 +19,14 @@ export interface EvaluationResult {
 }
 
 export type DamageVerdict = "파손됨" | "정상" | "불확실";
-export interface DamageFinding { location: string; type: string; description: string; }
+export interface BoundingBox { ymin: number; xmin: number; ymax: number; xmax: number; }
+export interface DamageFinding {
+  location: string;
+  type: string;
+  description: string;
+  photoIndex: number;
+  box: BoundingBox | null;
+}
 export interface PerPhotoNote { index: number; note: string; }
 export interface DamageResult {
   verdict: DamageVerdict;

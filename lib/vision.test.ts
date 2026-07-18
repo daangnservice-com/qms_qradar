@@ -12,6 +12,8 @@ describe("buildDamagePrompt", () => {
     expect(p).toContain("불확실");
     expect(p).toContain("여러 각도");
     expect(p).toContain("한국어");
+    expect(p).toContain("photoIndex");
+    expect(p).toContain("box");
   });
 });
 
@@ -23,7 +25,25 @@ describe("parseDamageResult", () => {
     expect(r.confidence).toBeCloseTo(0.87, 2);
     expect(r.findings).toHaveLength(1);
     expect(r.findings[0].type).toBe("긁힘");
+    expect(r.findings[0].photoIndex).toBe(1);
+    expect(r.findings[0].box).toEqual({ ymin: 720, xmin: 640, ymax: 880, xmax: 900 });
     expect(r.perPhoto[1].note).toContain("후면");
+  });
+
+  it("defaults photoIndex to 0 and box to null when a finding lacks them", () => {
+    const r = parseDamageResult(
+      '{"verdict":"파손됨","confidence":0.5,"summary":"","findings":[{"location":"앞면","type":"오염","description":"얼룩"}],"perPhoto":[]}',
+    );
+    expect(r.findings[0].photoIndex).toBe(0);
+    expect(r.findings[0].box).toBeNull();
+  });
+
+  it("returns null box for a malformed box", () => {
+    const r = parseDamageResult(
+      '{"verdict":"파손됨","confidence":0.5,"summary":"","findings":[{"location":"a","type":"b","description":"c","photoIndex":2,"box":{"ymin":"x"}}],"perPhoto":[]}',
+    );
+    expect(r.findings[0].photoIndex).toBe(2);
+    expect(r.findings[0].box).toBeNull();
   });
 
   it("tolerates code fences and defaults missing arrays", () => {
