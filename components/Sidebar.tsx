@@ -5,30 +5,13 @@ import {
   BookOpen,
   PanelLeftClose,
   PanelLeftOpen,
-  Home,
-  FileText,
-  ClipboardList,
-  Scale,
-  Mail,
-  BarChart3,
-  Bot,
-  TrendingUp,
   Phone,
   type LucideIcon,
 } from "lucide-react";
 
 type NavItem = { label: string; icon: LucideIcon; active?: boolean };
 
-// 대외민원팀 스위트의 네비게이션 — 이 페이지(콜 품질 평가)가 활성.
 const NAV: NavItem[] = [
-  { label: "홈 화면", icon: Home },
-  { label: "회의록", icon: FileText },
-  { label: "케이스 분석", icon: ClipboardList },
-  { label: "판단기준", icon: Scale },
-  { label: "Gmail 분류", icon: Mail },
-  { label: "통계 현황", icon: BarChart3 },
-  { label: "AI 챗봇", icon: Bot },
-  { label: "인사이트 분석", icon: TrendingUp },
   { label: "콜 품질 평가", icon: Phone, active: true },
 ];
 
@@ -45,7 +28,7 @@ export default function Sidebar() {
         <BookOpen className="h-5 w-5 shrink-0 text-brand" strokeWidth={2.2} />
         {!collapsed && (
           <span className="truncate text-[15px] font-bold tracking-tight text-gray-900">
-            대외민원팀
+            X팀
           </span>
         )}
         <button
