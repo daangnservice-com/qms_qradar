@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ScanSearch, Loader2, AlertCircle } from "lucide-react";
+import { ScanSearch, Loader2, AlertCircle, Info } from "lucide-react";
 import type { DamageResult } from "@/lib/types";
 import DamageUpload from "@/components/damage/DamageUpload";
 import DamageResultView from "@/components/damage/DamageResultView";
@@ -42,6 +42,10 @@ export default function DamagePage() {
         </h1>
         <p className="mt-1.5 text-sm text-gray-500">
           상품 사진을 여러 각도로 올리면 AI가 파손 여부·부위·유형을 판정해요 (중고거래 반품/분쟁용)
+        </p>
+        <p className="mt-2 flex items-start gap-1.5 text-sm text-navy">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>여러 가지의 상품을 올리면, 해당 상품들의 파손 정보를 함께 확인할 수 있어요.</span>
         </p>
       </header>
 
