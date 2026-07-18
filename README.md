@@ -98,4 +98,5 @@ npm test
 - 구현 계획서: [`docs/superpowers/plans/2026-07-19-damage-detection.md`](docs/superpowers/plans/2026-07-19-damage-detection.md)
 
 **개발일지**
-- [`docs/devlog/2026-07-18_개발일지.md`](docs/devlog/2026-07-18_개발일지.md)
+- [`docs/devlog/2026-07-18_개발일지.md`](docs/devlog/2026-07-18_개발일지.md) — 콜 품질 평가
+- [`docs/devlog/2026-07-19_개발일지.md`](docs/devlog/2026-07-19_개발일지.md) — 파손 판별 + 박스 오버레이
