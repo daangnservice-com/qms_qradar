@@ -1,20 +1,24 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import Sidebar from "@/components/Sidebar";
+import Providers from "./providers";
 
 export const metadata: Metadata = {
-  title: "X팀 · 콜 품질 평가 / 파손 판별",
-  description: "CS 콜 품질 평가와 상품 파손 판별 테스트 도구",
+  title: "X팀 테스트 도구",
+  description: "X팀 내부 테스트 페이지",
+  // 외부 검색 완전 차단
+  robots: {
+    index: false,
+    follow: false,
+    nocache: true,
+    googleBot: { index: false, follow: false },
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ko">
       <body>
-        <div className="flex min-h-screen bg-white">
-          <Sidebar />
-          <div className="flex min-w-0 flex-1 flex-col">{children}</div>
-        </div>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

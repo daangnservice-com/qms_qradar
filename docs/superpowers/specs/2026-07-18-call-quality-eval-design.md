@@ -1,10 +1,10 @@
 # 통화 품질 평가 테스트 사이트 — 기술 명세서
 
-- **문서 버전**: 3.0
+- **문서 버전**: 3.1
 - **작성일**: 2026-07-18
-- **개정 이력**: v1.0(로컬 동기) → v2.0(Vercel+S3+Lambda 비동기) → **v3.0(1단계: AWS 없이 동기 처리, AWS는 2단계로 보류)**
+- **개정 이력**: v1.0(로컬 동기) → v2.0(Vercel+S3+Lambda 비동기) → v3.0(1단계: AWS 없이 동기 처리) → **v3.1(구글 SSO·외부 검색 차단(SEO 제거) 구현 반영)**
 - **프로젝트명**: `call-quality-eval`
-- **상태**: 설계 확정 (구현 전)
+- **상태**: 1단계 구현 완료(콜 품질 평가 + 파손 판별 탭 + **구글 SSO** + **외부 검색 차단**). AWS 이전은 2단계.
 
 ---
 
@@ -231,11 +231,17 @@ flowchart TD
 
 ---
 
-## 11. 인증 (NextAuth)
+## 11. 인증 (NextAuth) — 구현됨(앱 전체)
 
-- Provider: Google OAuth.
-- `signIn` 콜백에서 이메일 도메인이 `ALLOWED_EMAIL_DOMAIN`과 일치하는지 검증, 아니면 거부.
-- `middleware.ts`로 로그인/`/api/auth` 외 전 경로 보호.
+- Provider: Google OAuth (`next-auth` v4). `lib/auth.ts`의 `isAllowedEmail`로 도메인 검증(`signIn` 콜백), `@daangnservice.com` 아니면 거부.
+- `middleware.ts`(`withAuth`)로 `/login`·`/api/auth`·정적·`robots.txt` 외 **전 경로 보호** → 미로그인 시 `/login`으로 리다이렉트. **두 탭(콜 품질 평가·파손 판별) 공통 적용.**
+- **레이아웃 구조**: `app/layout.tsx`(최소 루트 + `SessionProvider`) / `app/(main)/layout.tsx`(사이드바 셸, 두 탭) / `app/login/page.tsx`(사이드바 없는 로그인 화면 — "X팀이 현재 개발중인 테스트 페이지입니다." 안내).
+- 사이드바 하단에 로그인 이메일 + 로그아웃.
+
+## 11-1. 외부 검색 차단 (SEO 제거)
+
+- 루트 메타데이터 `robots: { index:false, follow:false, googleBot:{index:false,follow:false} }` → `noindex, nofollow`.
+- `app/robots.ts` → `/robots.txt`에서 전체 `Disallow: /`. 사이트맵 없음.
 
 ---
 

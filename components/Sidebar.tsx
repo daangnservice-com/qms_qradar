@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, PanelLeftClose, PanelLeftOpen, Phone, ScanSearch, type LucideIcon } from "lucide-react";
+import { useSession, signOut } from "next-auth/react";
+import { BookOpen, PanelLeftClose, PanelLeftOpen, Phone, ScanSearch, LogOut, type LucideIcon } from "lucide-react";
 
 type NavItem = { label: string; href: string; icon: LucideIcon };
 
@@ -15,6 +16,7 @@ const NAV: NavItem[] = [
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
+  const { data: session } = useSession();
 
   return (
     <aside
@@ -53,7 +55,22 @@ export default function Sidebar() {
         })}
       </nav>
 
-      {!collapsed && <div className="px-4 py-4 text-[11px] leading-relaxed text-gray-400">X팀 · 테스트 도구</div>}
+      <div className="border-t border-gray-200 p-3">
+        {!collapsed && session?.user?.email && (
+          <p className="truncate px-2 pb-1 text-[11px] text-gray-400">{session.user.email}</p>
+        )}
+        <button
+          type="button"
+          onClick={() => signOut({ callbackUrl: "/login" })}
+          title={collapsed ? "로그아웃" : undefined}
+          className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-medium text-gray-500 transition hover:bg-gray-200/70 hover:text-gray-800 ${
+            collapsed ? "w-full justify-center px-0" : "w-full"
+          }`}
+        >
+          <LogOut className="h-4 w-4 shrink-0" />
+          {!collapsed && <span>로그아웃</span>}
+        </button>
+      </div>
     </aside>
   );
 }
