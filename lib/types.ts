@@ -17,3 +17,14 @@ export interface EvaluationResult {
   silenceSummary: SilenceSummary;
   evaluation: Evaluation;
 }
+
+export type DamageVerdict = "파손됨" | "정상" | "불확실";
+export interface DamageFinding { location: string; type: string; description: string; }
+export interface PerPhotoNote { index: number; note: string; }
+export interface DamageResult {
+  verdict: DamageVerdict;
+  confidence: number;
+  summary: string;
+  findings: DamageFinding[];
+  perPhoto: PerPhotoNote[];
+}

@@ -1,0 +1,12 @@
+{
+  "verdict": "파손됨",
+  "confidence": 0.87,
+  "summary": "후면 우측 하단 모서리에 긁힘이 확인됨",
+  "findings": [
+    { "location": "우측 하단 모서리", "type": "긁힘", "description": "3cm 가량 긁힌 자국" }
+  ],
+  "perPhoto": [
+    { "index": 0, "note": "정면 — 특이사항 없음" },
+    { "index": 1, "note": "후면 — 모서리 파손 확인" }
+  ]
+}
