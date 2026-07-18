@@ -1,0 +1,9 @@
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/tmp/call.m4a':
+  Duration: 00:20:34.56, start: 0.000000, bitrate: 128 kb/s
+[silencedetect @ 0x55e] silence_start: 135.2
+[silencedetect @ 0x55e] silence_end: 160.4 | silence_duration: 25.2
+[silencedetect @ 0x55e] silence_start: 300.0
+[silencedetect @ 0x55e] silence_end: 304.5 | silence_duration: 4.5
+[silencedetect @ 0x55e] silence_start: 500.1
+[silencedetect @ 0x55e] silence_end: 502.0 | silence_duration: 1.9
+size=N/A time=00:20:34.56 bitrate=N/A speed=120x
