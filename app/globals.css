@@ -2,4 +2,24 @@
 
 @theme {
   --color-brand: #ff6f0f;
+  --color-navy: #1e3a5f;
+  --color-navy-hover: #24466e;
+  --color-surface: #f6f7f9;
+  --color-gap: #e5484d;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+    Pretendard, "Malgun Gothic", "Segoe UI", Roboto, sans-serif;
+  color: #111827;
+  background: #ffffff;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
