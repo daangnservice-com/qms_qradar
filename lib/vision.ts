@@ -14,8 +14,10 @@ export function buildDamagePrompt(imageCount: number): string {
     "- confidence: 0.0~1.0 확신도.",
     "- summary: 한 줄 종합 소견. '불확실'이면 어떤 사진/각도가 더 필요한지 적으세요.",
     "- findings: 파손 근거 목록(부위 location · 유형 type · 설명 description). '정상'이면 빈 배열.",
-    "- 각 finding에는 그 파손이 보이는 사진 번호 photoIndex(0부터)와 바운딩 박스 box를 함께 넣으세요.",
-    "  box는 정규화 좌표 {ymin, xmin, ymax, xmax}이며 각 값은 0~1000(이미지 좌상단이 0,0, 우하단이 1000,1000). 부위를 특정하기 어려우면 box는 null.",
+    "- 각 finding에는 그 파손이 보이는 사진 번호 photoIndex(0부터)와 바운딩 박스 box를 넣으세요.",
+    "  box는 '실제 손상 지점만 타이트하게' 감싸는 정규화 사각형 {ymin, xmin, ymax, xmax}이며, 각 값은 0~1000입니다(이미지 좌상단=0,0, 우하단=1000,1000).",
+    "  손·손가락·배경·상품 전체가 아니라, 균열/긁힘/얼룩 등 손상이 보이는 바로 그 영역만 감싸세요. 여러 각도 사진 중 그 손상이 가장 잘 보이는 사진의 photoIndex를 쓰세요.",
+    "  위치를 정확히 특정할 수 없으면 box는 반드시 null로 두세요. 부정확한 박스보다 박스 없음(null)이 낫습니다.",
     "- perPhoto: 각 사진(index는 0부터)마다 코멘트(note).",
     "",
     "모든 텍스트는 한국어로. 반드시 지정된 JSON 스키마로만 응답하세요.",
@@ -127,7 +129,11 @@ export async function runDamageDetection(
     const genAI = new GoogleGenerativeAI(apiKey);
     const gm = genAI.getGenerativeModel({
       model,
-      generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA as unknown as Schema },
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: RESPONSE_SCHEMA as unknown as Schema,
+        temperature: 0, // 좌표 안정성을 위해 결정적으로
+      },
     });
     const result = await gm.generateContent([...parts, { text: buildDamagePrompt(images.length) }]);
     return parseDamageResult(result.response.text());
