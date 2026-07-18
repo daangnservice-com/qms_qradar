@@ -63,4 +63,4 @@ npm test
 
 - 기술 명세서: [`docs/superpowers/specs/2026-07-18-call-quality-eval-design.md`](docs/superpowers/specs/2026-07-18-call-quality-eval-design.md)
 - 구현 계획서: [`docs/superpowers/plans/2026-07-18-call-quality-eval.md`](docs/superpowers/plans/2026-07-18-call-quality-eval.md)
-- 개발일지: [`docs/devlog/2026-07-18.md`](docs/devlog/2026-07-18.md)
+- 개발일지: [`docs/devlog/2026-07-18_개발일지.md`](docs/devlog/2026-07-18_개발일지.md)
