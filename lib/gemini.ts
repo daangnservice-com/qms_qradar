@@ -20,6 +20,8 @@ export function buildEvaluationPrompt(silences: Silence[], summary: SilenceSumma
     `요약: 공백 ${summary.count}회, 총 ${summary.totalSec.toFixed(1)}초, 최장 ${summary.longestSec.toFixed(1)}초.`,
     "",
     "위 공백 구간을 근거로 flow를 평가하고, 주요 공백에 대해 silenceComments에 코멘트를 남기세요.",
+    "",
+    "또한 통화 전체를 전사(transcript)하세요. 각 발화를 화자('상담원' 또는 '고객')로 구분하고, 발화 시작 시각을 초 단위(atSec)로 표기하세요. 들리는 순서대로 빠짐없이 담으세요.",
     "반드시 지정된 JSON 스키마로만 응답하세요.",
   ].join("\n");
 }
@@ -41,8 +43,20 @@ const RESPONSE_SCHEMA = {
       type: "array",
       items: { type: "object", properties: { atSec: { type: "number" }, note: { type: "string" } }, required: ["atSec", "note"] },
     },
+    transcript: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          atSec: { type: "number" },
+          speaker: { type: "string" },
+          text: { type: "string" },
+        },
+        required: ["atSec", "speaker", "text"],
+      },
+    },
   },
-  required: ["scores", "overallSummary", "silenceComments"],
+  required: ["scores", "overallSummary", "silenceComments", "transcript"],
 } as const;
 
 export function parseEvaluation(jsonText: string): Evaluation {
@@ -57,6 +71,13 @@ export function parseEvaluation(jsonText: string): Evaluation {
     overallSummary: String(o.overallSummary ?? ""),
     silenceComments: Array.isArray(o.silenceComments)
       ? o.silenceComments.map((c: { atSec: number; note: string }) => ({ atSec: Number(c.atSec), note: String(c.note) }))
+      : [],
+    transcript: Array.isArray(o.transcript)
+      ? o.transcript.map((t: { atSec: number; speaker: string; text: string }) => ({
+          atSec: Number(t.atSec),
+          speaker: String(t.speaker),
+          text: String(t.text),
+        }))
       : [],
     error: null,
   };

@@ -11,6 +11,7 @@ function emptyEvaluation(error: string): Evaluation {
     },
     overallSummary: "",
     silenceComments: [],
+    transcript: [],
     error,
   };
 }

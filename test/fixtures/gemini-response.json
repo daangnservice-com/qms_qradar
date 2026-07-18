@@ -7,5 +7,10 @@
   "overallSummary": "친절하나 검색 대기 시간이 길어 개선 필요",
   "silenceComments": [
     { "atSec": 135.2, "note": "02:15 지점 25초 공백으로 고객 대기 발생" }
+  ],
+  "transcript": [
+    { "atSec": 0.0, "speaker": "상담원", "text": "안녕하세요, 무엇을 도와드릴까요?" },
+    { "atSec": 4.5, "speaker": "고객", "text": "주문 취소하려고요." },
+    { "atSec": 135.2, "speaker": "상담원", "text": "잠시만요, 조회해보겠습니다." }
   ]
 }

@@ -2,6 +2,7 @@ import type { EvaluationResult } from "@/lib/types";
 import ScoreCard from "./ScoreCard";
 import ReportView from "./ReportView";
 import SilenceTimeline from "./SilenceTimeline";
+import Transcript from "./Transcript";
 
 export default function ResultView({ result }: { result: EvaluationResult }) {
   const { evaluation: e } = result;
@@ -24,6 +25,7 @@ export default function ResultView({ result }: { result: EvaluationResult }) {
         summary={result.silenceSummary}
         comments={e.silenceComments}
       />
+      <Transcript segments={e.transcript} />
     </section>
   );
 }
