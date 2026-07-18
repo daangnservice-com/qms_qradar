@@ -70,22 +70,31 @@ export async function runGeminiEvaluation(filePath: string, silences: Silence[],
   const fileManager = new GoogleAIFileManager(apiKey);
   const uploaded = await fileManager.uploadFile(filePath, { mimeType: "audio/mp4", displayName: "call.m4a" });
 
-  // 파일이 ACTIVE 될 때까지 대기
+  // 파일이 ACTIVE 될 때까지 대기 (최대 120초 / 60회 시도)
+  const MAX_POLL_ATTEMPTS = 60;
+  const POLL_INTERVAL_MS = 2000;
   let file = await fileManager.getFile(uploaded.file.name);
+  let attempts = 0;
   while (file.state === FileState.PROCESSING) {
-    await new Promise((r) => setTimeout(r, 2000));
+    if (attempts >= MAX_POLL_ATTEMPTS) throw new Error("Gemini 파일 처리 시간 초과");
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     file = await fileManager.getFile(uploaded.file.name);
+    attempts++;
   }
   if (file.state === FileState.FAILED) throw new Error("Gemini 파일 처리 실패");
 
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const gm = genAI.getGenerativeModel({
-    model,
-    generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA as unknown as Schema },
-  });
-  const result = await gm.generateContent([
-    { fileData: { fileUri: file.uri, mimeType: file.mimeType } },
-    { text: buildEvaluationPrompt(silences, summary) },
-  ]);
-  return parseEvaluation(result.response.text());
+  try {
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const gm = genAI.getGenerativeModel({
+      model,
+      generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA as unknown as Schema },
+    });
+    const result = await gm.generateContent([
+      { fileData: { fileUri: file.uri, mimeType: file.mimeType } },
+      { text: buildEvaluationPrompt(silences, summary) },
+    ]);
+    return parseEvaluation(result.response.text());
+  } finally {
+    await fileManager.deleteFile(uploaded.file.name).catch(() => {});
+  }
 }

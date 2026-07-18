@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { saveTempFile, cleanupTempFile } from "@/lib/audio";
 import { evaluateFile } from "@/lib/evaluate";
+import { numEnv } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const maxDuration = 60; // Vercel 배포 시 상한(로컬은 무제한)
@@ -16,14 +17,14 @@ export async function POST(req: Request): Promise<Response> {
     if (!file.name.toLowerCase().endsWith(".m4a")) {
       return NextResponse.json({ error: "m4a 파일만 지원합니다." }, { status: 400 });
     }
-    const maxMb = Number(process.env.MAX_UPLOAD_MB ?? 200);
+    const maxMb = numEnv("MAX_UPLOAD_MB", 200);
     if (file.size > maxMb * 1024 * 1024) {
       return NextResponse.json({ error: `최대 ${maxMb}MB까지 업로드할 수 있습니다.` }, { status: 400 });
     }
 
     const raw = Number(fd.get("minSilenceSec") ?? 3);
     const minSilenceSec = Math.min(10, Math.max(1, Number.isFinite(raw) ? raw : 3));
-    const noiseDb = Number(process.env.SILENCE_NOISE_DB ?? -30);
+    const noiseDb = numEnv("SILENCE_NOISE_DB", -30);
 
     const bytes = new Uint8Array(await file.arrayBuffer());
     tempPath = await saveTempFile(bytes, ".m4a");
