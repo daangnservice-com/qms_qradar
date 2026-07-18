@@ -97,7 +97,10 @@ export async function runGeminiEvaluation(filePath: string, silences: Silence[],
   let file = await fileManager.getFile(uploaded.file.name);
   let attempts = 0;
   while (file.state === FileState.PROCESSING) {
-    if (attempts >= MAX_POLL_ATTEMPTS) throw new Error("Gemini 파일 처리 시간 초과");
+    if (attempts >= MAX_POLL_ATTEMPTS)
+      throw new Error(
+        "Gemini 오디오 처리 시간 초과 — 업로드한 파일이 약 120초 안에 처리 준비되지 않았어요. 파일이 너무 길거나 네트워크가 느릴 수 있어요. 더 짧은 파일로 시도해 주세요.",
+      );
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     file = await fileManager.getFile(uploaded.file.name);
     attempts++;

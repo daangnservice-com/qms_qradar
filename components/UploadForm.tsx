@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Sparkles, Loader2, AlertCircle } from "lucide-react";
 import type { EvaluationResult } from "@/lib/types";
+import { describeApiError } from "@/lib/apiError";
 import ThresholdSlider from "./ThresholdSlider";
 import UploadDropzone from "./UploadDropzone";
 
@@ -26,7 +27,7 @@ export default function UploadForm({
       fd.set("file", file);
       fd.set("minSilenceSec", String(minSilenceSec));
       const res = await fetch("/api/evaluate", { method: "POST", body: fd });
-      if (!res.ok) throw new Error((await res.json()).error ?? "평가에 실패했어요");
+      if (!res.ok) throw new Error(await describeApiError(res));
       onResult(await res.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "평가에 실패했어요");
@@ -43,7 +44,7 @@ export default function UploadForm({
       {error && (
         <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span>{error}</span>
+          <span className="whitespace-pre-line">{error}</span>
         </div>
       )}
 

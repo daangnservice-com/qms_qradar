@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ScanSearch, Loader2, AlertCircle, Info } from "lucide-react";
 import type { DamageResult } from "@/lib/types";
+import { describeApiError } from "@/lib/apiError";
 import DamageUpload from "@/components/damage/DamageUpload";
 import DamageResultView from "@/components/damage/DamageResultView";
 
@@ -23,7 +24,7 @@ export default function DamagePage() {
       const fd = new FormData();
       submitted.forEach((f) => fd.append("images", f));
       const res = await fetch("/api/damage", { method: "POST", body: fd });
-      if (!res.ok) throw new Error((await res.json()).error ?? "판별에 실패했어요");
+      if (!res.ok) throw new Error(await describeApiError(res));
       setSubmittedFiles(submitted);
       setResult(await res.json());
     } catch (err) {
@@ -54,7 +55,7 @@ export default function DamagePage() {
         {error && (
           <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{error}</span>
+            <span className="whitespace-pre-line">{error}</span>
           </div>
         )}
         <button

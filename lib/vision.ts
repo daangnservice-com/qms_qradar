@@ -117,7 +117,10 @@ export async function runDamageDetection(
       let file = await fileManager.getFile(up.file.name);
       let attempts = 0;
       while (file.state === FileState.PROCESSING) {
-        if (attempts >= 30) throw new Error("Gemini 이미지 처리 시간 초과");
+        if (attempts >= 30)
+          throw new Error(
+            "Gemini 이미지 처리 시간 초과 — 업로드한 이미지가 약 30초 안에 처리 준비되지 않았어요. 이미지가 너무 크거나 네트워크가 느릴 수 있어요. 더 작은 이미지로 시도해 주세요.",
+          );
         await new Promise((r) => setTimeout(r, 1000));
         file = await fileManager.getFile(up.file.name);
         attempts++;
