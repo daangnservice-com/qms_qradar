@@ -1,13 +1,18 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { ClipboardList, Images } from "lucide-react";
 import type { DamageResult } from "@/lib/types";
 import VerdictBadge from "./VerdictBadge";
 
 export default function DamageResultView({ result, files }: { result: DamageResult; files: File[] }) {
-  const urls = useMemo(() => files.map((f) => URL.createObjectURL(f)), [files]);
-  useEffect(() => () => urls.forEach((u) => URL.revokeObjectURL(u)), [urls]);
+  // 사진 blob URL: 단일 effect에서 생성+해제(StrictMode 재마운트에도 안전)
+  const [urls, setUrls] = useState<string[]>([]);
+  useEffect(() => {
+    const created = files.map((f) => URL.createObjectURL(f));
+    setUrls(created);
+    return () => created.forEach((u) => URL.revokeObjectURL(u));
+  }, [files]);
 
   return (
     <section className="mt-8 space-y-4">
