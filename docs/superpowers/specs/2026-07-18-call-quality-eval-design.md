@@ -76,7 +76,52 @@
 
 ## 6. 아키텍처
 
-### 6.1 전체 흐름
+### 6.1 전체 그림 (Mermaid)
+
+```mermaid
+flowchart TD
+    subgraph Browser["🖥️ 브라우저"]
+        UF["UploadForm</br>m4a 파일 선택"]
+        TS["ThresholdSlider</br>공백 임계값(기본 3초)"]
+        RESULT["결과 화면</br>ScoreCard ×3 · ReportView</br>SilenceTimeline"]
+    end
+
+    subgraph Server["⚙️ Next.js 서버 (App Router)"]
+        API["POST /api/evaluate</br>오케스트레이션"]
+        SAVE["① 임시 파일 저장</br>lib/audio.ts"]
+        SIL["② 무음 감지</br>lib/silence.ts</br>ffmpeg silencedetect"]
+        GEM["③ AI 평가 호출</br>lib/gemini.ts"]
+        MERGE["④ 결과 병합 + JSON</br>임시파일 정리(finally)"]
+    end
+
+    subgraph External["☁️ 외부"]
+        FF["ffmpeg-static</br>바이너리(무음 구간 추출)"]
+        GAPI["Gemini File API</br>gemini-2.5-flash"]
+    end
+
+    UF -->|"multipart</br>file + minSilenceSec"| API
+    TS -->|"임계값"| API
+    API --> SAVE
+    SAVE --> SIL
+    SIL <-->|"stderr 파싱</br>silence_start/end"| FF
+    SIL -->|"Silence[]</br>초 단위 공백"| GEM
+    GEM <-->|"오디오 업로드 + 공백 데이터</br>프롬프트 동봉"| GAPI
+    GAPI -->|"구조화 JSON</br>점수·총평·공백 코멘트"| GEM
+    GEM --> MERGE
+    SIL -.->|"신호 기반 공백(신뢰 소스)"| MERGE
+    MERGE -->|"평가 결과 JSON"| RESULT
+
+    classDef signal fill:#e8f5e9,stroke:#43a047,color:#1b5e20;
+    classDef ai fill:#e3f2fd,stroke:#1e88e5,color:#0d47a1;
+    class SIL,FF signal;
+    class GEM,GAPI ai;
+```
+
+- **초록 경로(신호 기반)**: ffmpeg가 무음 구간을 초 단위로 정확히 추출 → 공백 타임라인의 **신뢰 소스**.
+- **파랑 경로(AI)**: Gemini가 오디오를 직접 듣고 태도/해결력/흐름을 평가. ②의 공백 데이터를 프롬프트에 동봉받아 **근거 있는 공백 코멘트** 생성.
+- ②를 먼저 실행해 그 결과를 ③에 넘기고, 최종 병합 시 공백 수치는 ②(ffmpeg)를 우선한다.
+
+### 6.2 전체 흐름 (텍스트)
 
 ```
 [브라우저]
@@ -106,7 +151,7 @@
 - **(2)를 먼저 실행 → (3)에 공백 데이터를 넘긴다.** 그래야 AI가 "02:15 지점 25초 공백이 대화 흐름을 끊었다"처럼 근거 있는 코멘트를 낼 수 있다.
 - ffmpeg 무음 감지는 파일 길이 대비 매우 빠르므로 순차 실행에 따른 지연은 미미하다.
 
-### 6.2 모듈 분리
+### 6.3 모듈 분리
 
 | 파일 | 책임 | 의존성 | 테스트 |
 |------|------|--------|--------|
