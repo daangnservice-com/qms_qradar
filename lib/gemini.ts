@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, type Schema } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import { formatClock } from "./format";
 import type { Silence, SilenceSummary, Evaluation } from "./types";
@@ -81,7 +81,7 @@ export async function runGeminiEvaluation(filePath: string, silences: Silence[],
   const genAI = new GoogleGenerativeAI(apiKey);
   const gm = genAI.getGenerativeModel({
     model,
-    generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA as object },
+    generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA as unknown as Schema },
   });
   const result = await gm.generateContent([
     { fileData: { fileUri: file.uri, mimeType: file.mimeType } },
