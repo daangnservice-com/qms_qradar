@@ -1,0 +1,11 @@
+{
+  "scores": {
+    "attitude": { "score": 4, "comment": "전반적으로 친절하고 공감 표현이 있음" },
+    "resolution": { "score": 3, "comment": "문의는 해결했으나 안내가 다소 장황" },
+    "flow": { "score": 2, "comment": "검색성 공백이 길어 흐름이 끊김" }
+  },
+  "overallSummary": "친절하나 검색 대기 시간이 길어 개선 필요",
+  "silenceComments": [
+    { "atSec": 135.2, "note": "02:15 지점 25초 공백으로 고객 대기 발생" }
+  ]
+}
