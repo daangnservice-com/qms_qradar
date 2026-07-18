@@ -1,8 +1,15 @@
 # call-quality-eval
 
-고객 상담(CS) 콜 녹음을 업로드하면 AI가 통화 품질을 평가하고, 통화 중 공백(무음 구간)을 초 단위로 측정하는 **테스트용 사이트**.
+X팀 테스트용 사이트. 사이드바 **2탭** 구성:
 
-## 개요
+1. **콜 품질 평가** — CS 콜 녹음을 올리면 AI가 품질을 평가하고 공백(무음)을 초 단위로 측정 + 전체 대화 스크립트.
+2. **파손 판별 (Vision AI)** — 상품 사진을 여러 각도로 올리면 AI가 파손 여부·부위·유형을 판정(중고거래 반품/분쟁용).
+
+---
+
+## 탭 1 — 콜 품질 평가
+
+### 개요
 
 - **입력**: 통화 녹음 `.m4a` (10~30분+), 한 번에 한 개 (드래그앤드롭 또는 파일 선택)
 - **평가 항목**: 응대 태도 / 문제 해결력 / 대화 흐름·공백 (각 1~5점)
@@ -24,10 +31,31 @@
 
 > **정밀도 참고**: 공백 타임라인은 ffmpeg 신호 기반이라 초 단위로 정확하고, 전사 타임스탬프는 Gemini 추정치라 근사값입니다.
 
+---
+
+## 탭 2 — 파손 판별 (Vision AI)
+
+### 개요
+
+- **입력**: 상품 사진 `.jpg/.png/.webp`, 1~8장 (한 상품의 여러 각도, 드래그앤드롭 또는 파일 선택)
+- **판정**: **파손됨 / 정상 / 불확실** + 신뢰도(%)
+- **결과**: 판정 배지 + 종합 소견 + 파손 근거(부위·유형·설명) + 사진별 코멘트(썸네일)
+- **용도**: 중고거래 반품/분쟁 판정 근거
+
+### 동작
+
+- 여러 사진을 **한 번의 Gemini 호출**에 함께 넣어(한 상품의 여러 각도) 종합 판정. 사물 종류와 무관하게 물리적 손상 판별.
+- 이미지는 **Gemini File API 업로드**(원본 해상도 유지 → 미세한 긁힘/흠집까지). 판정 후 업로드 파일 정리.
+- 판정 로직은 `lib/vision.ts` 순수 모듈(HTTP 비의존)로 격리 → 2단계 이식 대비.
+
+> **HEIC 미지원(1단계)**: 아이폰 기본 HEIC는 Gemini가 직접 못 받아 제외. jpg/png/webp로 올려주세요.
+
+---
+
 ## 기술 스택
 
 - Next.js 15 (App Router) / TypeScript / Tailwind CSS v4 (CSS-first)
-- Google `gemini-2.5-flash` (`@google/generative-ai`)
+- Google `gemini-2.5-flash` (`@google/generative-ai`) — 오디오·이미지 File API
 - `ffmpeg-static` (무음 감지)
 - Vitest (테스트)
 
@@ -56,11 +84,18 @@ npm test
 
 ## 상태
 
-- **1단계 (구현 완료)**: AWS 없이 Next.js 단독 동기 처리. 업로드 → ffmpeg 무음 측정 + Gemini 평가/전사 → 결과. UI 정돈 완료.
+- **1단계 (구현 완료)**: AWS 없이 Next.js 단독 동기 처리. 콜 품질 평가 + 파손 판별 두 탭. UI 정돈 완료.
 - **2단계 (예정, 인프라 협의 후)**: 구글 SSO(@daangnservice.com), S3 presigned 업로드, AWS Lambda 비동기 처리.
 
 ## 문서
 
+**콜 품질 평가**
 - 기술 명세서: [`docs/superpowers/specs/2026-07-18-call-quality-eval-design.md`](docs/superpowers/specs/2026-07-18-call-quality-eval-design.md)
 - 구현 계획서: [`docs/superpowers/plans/2026-07-18-call-quality-eval.md`](docs/superpowers/plans/2026-07-18-call-quality-eval.md)
-- 개발일지: [`docs/devlog/2026-07-18_개발일지.md`](docs/devlog/2026-07-18_개발일지.md)
+
+**파손 판별**
+- 기술 명세서: [`docs/superpowers/specs/2026-07-19-damage-detection-design.md`](docs/superpowers/specs/2026-07-19-damage-detection-design.md)
+- 구현 계획서: [`docs/superpowers/plans/2026-07-19-damage-detection.md`](docs/superpowers/plans/2026-07-19-damage-detection.md)
+
+**개발일지**
+- [`docs/devlog/2026-07-18_개발일지.md`](docs/devlog/2026-07-18_개발일지.md)
