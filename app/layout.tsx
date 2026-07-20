@@ -5,8 +5,8 @@ import Providers from "./providers";
 import UsageTracker from "@/components/UsageTracker";
 
 export const metadata: Metadata = {
-  title: "X팀 테스트 도구",
-  description: "X팀 내부 테스트 페이지",
+  title: "X팀 헬프데스크",
+  description: "X팀 내부 헬프데스크",
   // 외부 검색 완전 차단
   robots: {
     index: false,
