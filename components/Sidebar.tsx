@@ -4,19 +4,23 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
-import { BookOpen, PanelLeftClose, PanelLeftOpen, Phone, ScanSearch, LogOut, type LucideIcon } from "lucide-react";
+import { BookOpen, PanelLeftClose, PanelLeftOpen, Phone, ScanSearch, BarChart3, LogOut, type LucideIcon } from "lucide-react";
+import { isAdmin } from "@/lib/adminEmails";
 
-type NavItem = { label: string; href: string; icon: LucideIcon };
+type NavItem = { label: string; href: string; icon: LucideIcon; adminOnly?: boolean };
 
 const NAV: NavItem[] = [
   { label: "콜 품질 평가", href: "/", icon: Phone },
   { label: "파손 판별", href: "/damage", icon: ScanSearch },
+  { label: "사용량", href: "/usage", icon: BarChart3, adminOnly: true },
 ];
 
 export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
   const { data: session } = useSession();
+  const admin = isAdmin(session?.user?.email);
+  const navItems = NAV.filter((item) => !item.adminOnly || admin);
 
   return (
     <aside
@@ -36,7 +40,7 @@ export default function Sidebar() {
       </div>
 
       <nav className="flex flex-1 flex-col gap-1 px-3 py-2">
-        {NAV.map(({ label, href, icon: Icon }) => {
+        {navItems.map(({ label, href, icon: Icon }) => {
           const active = pathname === href;
           return (
             <Link
