@@ -1,11 +1,12 @@
-# call-quality-eval
+# call-quality-eval (X팀 헬프데스크)
 
-X팀 **내부 테스트용 사이트**. 구글 SSO 로그인 뒤에서 동작하며, 사이드바 **2탭**으로 구성돼 있습니다.
+X팀 **내부 테스트용 사이트**(브라우저 탭 제목: **X팀 헬프데스크**). 구글 SSO 로그인 뒤에서 동작하며, 사이드바 **3탭**으로 구성돼 있습니다.
 
 | 탭 | 하는 일 |
 |----|---------|
 | **콜 품질 평가** | CS 콜 녹음(m4a)을 올리면 AI가 품질을 평가하고 공백(무음)을 초 단위로 측정 + 전체 대화 스크립트 |
 | **파손 판별 (Vision AI)** | 상품 사진을 여러 장 올리면 AI가 파손 여부·부위·유형을 판정하고 **사진 위에 빨간 박스로 표시**(중고거래 반품/분쟁용) |
+| **사용량** (관리자 전용) | 누가·어떤 화면을·언제 접속했는지 BigQuery에 적재해 대시보드로 집계. `ADMIN_EMAILS`에만 탭·API 노출 |
 
 - 배포: **Vercel** (프로덕션: `https://call-quality-eval-theta.vercel.app`)
 - 접근: **@daangnservice.com 구글 계정만** 로그인 가능. 외부 검색엔진에는 **노출 안 됨(noindex + robots 차단)**.
@@ -60,12 +61,32 @@ X팀 **내부 테스트용 사이트**. 구글 SSO 로그인 뒤에서 동작하
 
 ---
 
+## 탭 3 — 사용량 (관리자 전용)
+
+**목적**: 내부 테스트 단계에서 **누가·어떤 화면을·언제** 접속했는지 파악.
+**접근 제한**: `lib/adminEmails.ts`의 `ADMIN_EMAILS`(현재 `karla@daangnservice.com`)에게만 사이드바 탭·`/usage`·`/api/stats/usage`가 열립니다. 그 외 로그인 사용자는 탭 자체가 안 보이고, API도 **403**.
+**대시보드**: 총 조회수 / 접속 사용자 수 / 일별 접속량(경량 SVG 막대) / 화면별 접속 / 사용자별 접속(펼치면 화면별·마지막 접속). 기간 7·30·90일 토글.
+
+**수집 동작**
+- 라우트가 바뀔 때마다 `UsageTracker`가 현재 경로를 `navigator.sendBeacon`(폴백 `fetch keepalive`)으로 `POST /api/track`에 비차단 전송. 실패해도 UX 영향 없음(fire-and-forget).
+- 서버는 세션 쿠키로 사용자를 식별해 BigQuery `usage_events`에 1건 적재. **비로그인·`/api`·`/_next`·`/login`은 집계 제외**, 항상 204 응답.
+- 집계는 **한국시간(Asia/Seoul)** 기준 날짜로 묶고, 검증용 행(`event='__verify'`)은 제외.
+
+**BigQuery**
+- 대상: `striped-option-493506-a7.helpdesk_x.usage_events` (`asia-northeast3`). 데이터셋·테이블이 없으면 최초 1회 자동 생성.
+- 인증: `GOOGLE_SERVICE_ACCOUNT_JSON`(서비스계정 키 JSON) 우선, 없으면 ADC(`GOOGLE_APPLICATION_CREDENTIALS`).
+
+> 개인별 접속기록(개인정보)이 포함되므로 조회 권한을 `ADMIN_EMAILS`로 한정합니다. 관리자를 늘리려면 이 배열에 이메일 추가.
+
+---
+
 ## 기술 스택
 
 - **Next.js 15 (App Router)** / TypeScript / **Tailwind CSS v4** (CSS-first, `@theme`)
 - **인증**: NextAuth v4 (Google OAuth, `@daangnservice.com` 도메인 제한)
 - **AI**: Google `gemini-2.5-flash` (`@google/generative-ai`) — 오디오·이미지 **File API**
 - **무음 감지**: `ffmpeg-static`
+- **사용량 적재/집계**: BigQuery (`@google-cloud/bigquery`)
 - **모니터링**: `@vercel/analytics`
 - **테스트**: Vitest (+ @testing-library/react)
 - **아이콘**: lucide-react
@@ -76,22 +97,27 @@ X팀 **내부 테스트용 사이트**. 구글 SSO 로그인 뒤에서 동작하
 
 ```
 app/
-  layout.tsx              # 최소 루트: SessionProvider + SEO 차단 메타 + <Analytics/>
+  layout.tsx              # 최소 루트: Providers + SEO 차단 메타 + <UsageTracker/> + <Analytics/>
+  providers.tsx           # SessionProvider (클라이언트)
   login/page.tsx          # 로그인 화면 (사이드바 없음)
   robots.ts               # /robots.txt (전체 Disallow)
   (main)/                 # 로그인 뒤 영역 (사이드바 셸)
     layout.tsx            #   사이드바 + 메인
     page.tsx              #   콜 품질 평가 (/)
     damage/page.tsx       #   파손 판별 (/damage)
+    usage/page.tsx        #   사용량 대시보드 (/usage, 관리자 전용)
   api/
     auth/[...nextauth]/   # NextAuth 핸들러
     evaluate/route.ts     # 콜 평가 API
     damage/route.ts       # 파손 판별 API
+    track/route.ts        # 사용량 수집 (POST, fire-and-forget → 204)
+    stats/usage/route.ts  # 사용량 집계 조회 (관리자만, 그 외 403)
 lib/                      # HTTP 비의존 순수 모듈 (2단계 Lambda 이식 대비)
   auth.ts  types.ts  format.ts  env.ts  audio.ts
   silence.ts  gemini.ts  evaluate.ts        # 콜 품질
   vision.ts                                 # 파손 판별
-components/               # Sidebar, 콜/파손 UI 컴포넌트
+  bigquery.ts  adminEmails.ts               # 사용량(BigQuery 적재/집계·관리자 판별)
+components/               # Sidebar, 콜/파손 UI, UsageTracker(라우트 변경 추적)
 middleware.ts             # 인증 게이트 (미로그인 → /login)
 ```
 
@@ -116,8 +142,14 @@ middleware.ts             # 인증 게이트 (미로그인 → /login)
 | `MAX_UPLOAD_MB` | 콜 녹음 최대 크기 | `200` |
 | `MAX_IMAGES` | 파손 판별 최대 장수 | `8` |
 | `MAX_IMAGE_MB` | 파손 이미지 장당 최대 | `10` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | 사용량 탭 BigQuery 인증(서비스계정 키 JSON). 없으면 ADC 사용 | — |
+| `GOOGLE_CLOUD_PROJECT_ID` | 사용량 BigQuery 프로젝트 | `striped-option-493506-a7` |
+| `BIGQUERY_DATASET_ID` | 사용량 데이터셋 | `helpdesk_x` |
+| `BIGQUERY_LOCATION` | 사용량 데이터셋 리전 | `asia-northeast3` |
 
-> 참고: 저장소의 예시 파일명은 `.env.local copy.example` 입니다.
+> 사용량 탭을 쓰지 않는 로컬에서는 `GOOGLE_SERVICE_ACCOUNT_JSON` 없이도 콜 품질/파손 판별 두 탭은 정상 동작합니다(트래킹만 조용히 실패).
+
+> 참고: 저장소의 예시 파일은 [`.env.local.example`](.env.local.example) 입니다.
 
 ---
 
@@ -170,7 +202,7 @@ npm run build
 
 ## 상태 / 로드맵
 
-- **1단계 (완료)**: 두 탭(콜 품질 평가·파손 판별) + 파손 박스 오버레이 + **구글 SSO** + **외부 검색 차단** + **Vercel Analytics**. AWS 없이 동기 처리.
+- **1단계 (완료)**: 세 탭(콜 품질 평가·파손 판별·사용량) + 파손 박스 오버레이 + **구글 SSO** + **외부 검색 차단** + **Vercel Analytics** + **사용량 트래킹(BigQuery)·관리자 대시보드**. AWS 없이 동기 처리.
 - **2단계 (예정, 인프라 협의 후)**: S3 presigned 업로드 + AWS Lambda 비동기 처리(대용량·장시간 대응).
 - **후속 개선**: 파손 박스 정확도 B(부위별 재검출)/C(pro 모델), 필요 시 HEIC 지원.
 
@@ -186,6 +218,10 @@ npm run build
 - 기술 명세서: [`docs/superpowers/specs/2026-07-19-damage-detection-design.md`](docs/superpowers/specs/2026-07-19-damage-detection-design.md)
 - 구현 계획서: [`docs/superpowers/plans/2026-07-19-damage-detection.md`](docs/superpowers/plans/2026-07-19-damage-detection.md)
 
+**서비스 구조**
+- [`docs/helpdesk-x_서비스구조.md`](docs/helpdesk-x_서비스구조.md) — 전체 동작 구조 개요
+
 **개발일지**
 - [`docs/devlog/2026-07-18_개발일지.md`](docs/devlog/2026-07-18_개발일지.md) — 콜 품질 평가
 - [`docs/devlog/2026-07-19_개발일지.md`](docs/devlog/2026-07-19_개발일지.md) — 파손 판별 + 박스 오버레이
+- [`docs/devlog/2026-07-20_개발일지.md`](docs/devlog/2026-07-20_개발일지.md) — 사용량 트래킹 + 관리자 대시보드
