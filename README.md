@@ -1,11 +1,12 @@
 # call-quality-eval (X팀 헬프데스크)
 
-X팀 **내부 테스트용 사이트**(브라우저 탭 제목: **X팀 헬프데스크**). 구글 SSO 로그인 뒤에서 동작하며, 사이드바 **3탭**으로 구성돼 있습니다.
+X팀 **내부 테스트용 사이트**(브라우저 탭 제목: **X팀 헬프데스크**). 구글 SSO 로그인 뒤에서 동작하며, 사이드바 탭(관리자는 **4탭**, 일반은 2탭)으로 구성돼 있습니다.
 
 | 탭 | 하는 일 |
 |----|---------|
 | **콜 품질 평가** | CS 콜 녹음(m4a)을 올리면 AI가 품질을 평가하고 공백(무음)을 초 단위로 측정 + 전체 대화 스크립트 |
-| **파손 판별 (Vision AI)** | 상품 사진을 여러 장 올리면 AI가 파손 여부·부위·유형을 판정하고 **사진 위에 빨간 박스로 표시**(중고거래 반품/분쟁용) |
+| **파손 판별 (Vision AI)** | 신청인·피신청인이 제출한 사진을 각각 올리면 AI가 **양측을 비교**해 파손 여부·부위·유형을 판정하고 **사진 위에 빨간 박스로 표시**(분쟁조정용). 결과에 **👍/👎 피드백** 수집 |
+| **피드백** (관리자 전용) | 파손 판별 결과의 좋아요/나빠요 + 코멘트를 BigQuery(`damage_feedback`)에 적재. **프롬프트 버전별 만족도**·나쁜 사례 사진 리뷰로 프롬프트/모델 개선. `ADMIN_EMAILS`만 노출 |
 | **사용량** (관리자 전용) | 누가·어떤 화면을·언제 접속했는지 BigQuery에 적재해 대시보드로 집계. `ADMIN_EMAILS`에만 탭·API 노출 |
 
 - 배포: **Vercel** (프로덕션: `https://call-quality-eval-theta.vercel.app`)
@@ -43,14 +44,21 @@ X팀 **내부 테스트용 사이트**(브라우저 탭 제목: **X팀 헬프데
 
 ## 탭 2 — 파손 판별 (Vision AI)
 
-**입력**: 상품 사진 `.jpg/.jpeg/.png/.webp`, 1~8장 (각 ≤10MB)
+**입력**: **신청인·피신청인** 사진을 각각 업로드 `.jpg/.jpeg/.png/.webp`, **파당 최대 5장**(각 ≤10MB). 한쪽만 올려도 판정 가능.
 **판정**: **파손됨 / 정상 / 불확실** + 신뢰도(%)
-**결과**: 판정 배지 + 종합 소견 + 파손 근거(부위·유형·설명, 번호 매김) + **사진별 오버레이**
-**용도**: 중고거래 반품/분쟁 판정 근거
+**결과**: 판정 배지 + 종합 소견 + **양측 비교 소견** + 파손 근거(부위·유형·설명·**제출 측**, 번호 매김) + **사진별 오버레이(신청인/피신청인 분리)**
+**용도**: 분쟁조정 — 양측이 제출한 증거 사진 비교 판정
 
 **동작**
-- 여러 사진을 **한 번의 Gemini 호출**에 함께 넣어 종합 판정. 사물 종류와 무관하게 물리적 손상(긁힘/찍힘/파열/깨짐/오염/변형/부품 누락 등) 판별.
+- 양측 사진을 **한 번의 Gemini 호출**에 함께 넣어 종합 판정. **통합 순서(신청인 사진 먼저, 그 뒤 피신청인)**로 `photoIndex`를 부여하고, `claimantCount`로 각 사진·근거의 제출 측(party)을 역산.
+- `comparison` 필드로 **양측 사진 간 파손 표현의 차이·불일치**(한쪽엔 보이나 다른 쪽엔 안 보임, 각도/조명 차이, 동일 상품 의심 등)를 짚음.
+- 사물 종류와 무관하게 물리적 손상(긁힘/찍힘/파열/깨짐/오염/변형/부품 누락 등) 판별.
 - 이미지는 **Gemini File API 업로드**(원본 해상도 유지 → 미세 손상까지). 판정 후 업로드 파일 정리.
+- 프롬프트/판정 로직 버전 `DAMAGE_PROMPT_VERSION`(현재 `v1`) — 피드백과 짝지어 버전별 품질 비교(Phase 2).
+
+**판정에 대해 물어보기 (챗봇)**
+- 결과 하단에 멀티턴 챗봇. "왜 이렇게 판단했어?" 등 질문 시 **원본 사진을 매 요청 재첨부**해 Gemini가 시각적으로 다시 살펴보고 답함(`lib/damageChat.ts`, `/api/damage/chat`).
+- 서버 stateless → 대화 히스토리(최근 20턴)와 판정 결과 JSON을 함께 보내 문맥 유지. 응답 후 업로드 파일 정리.
 
 **파손 부위 시각화 (박스 오버레이)**
 - 각 파손 근거에 `photoIndex` + 바운딩 박스(`{ymin,xmin,ymax,xmax}` 0~1000 정규화)를 받아, 원본 사진 위에 **빨간 사각형 + 번호(①②③)**로 표시. 근거 리스트와 번호가 매칭되고, 항목에 마우스를 올리면 해당 박스가 강조.
@@ -140,14 +148,17 @@ middleware.ts             # 인증 게이트 (미로그인 → /login)
 | `ALLOWED_EMAIL_DOMAIN` | 로그인 허용 도메인 | `daangnservice.com` |
 | `SILENCE_NOISE_DB` | 무음 감지 dB 임계 | `-30` |
 | `MAX_UPLOAD_MB` | 콜 녹음 최대 크기 | `200` |
-| `MAX_IMAGES` | 파손 판별 최대 장수 | `8` |
+| `MAX_IMAGES_PER_PARTY` | 파손 판별 **파당** 최대 장수(신청인/피신청인 각각) | `5` |
 | `MAX_IMAGE_MB` | 파손 이미지 장당 최대 | `10` |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | 사용량 탭 BigQuery 인증(서비스계정 키 JSON). 없으면 ADC 사용 | — |
-| `GOOGLE_CLOUD_PROJECT_ID` | 사용량 BigQuery 프로젝트 | `striped-option-493506-a7` |
-| `BIGQUERY_DATASET_ID` | 사용량 데이터셋 | `helpdesk_x` |
-| `BIGQUERY_LOCATION` | 사용량 데이터셋 리전 | `asia-northeast3` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | 사용량·피드백 BigQuery/GCS 인증(서비스계정 키 JSON). 없으면 ADC 사용 | — |
+| `GOOGLE_CLOUD_PROJECT_ID` | BigQuery/GCS 프로젝트 | `striped-option-493506-a7` |
+| `BIGQUERY_DATASET_ID` | 사용량·피드백 데이터셋 | `helpdesk_x` |
+| `BIGQUERY_LOCATION` | 데이터셋 리전 | `asia-northeast3` |
+| `GCS_FEEDBACK_BUCKET` | 피드백 사진 보관 버킷(없으면 자동 생성) | `striped-option-493506-a7-helpdesk-x-feedback` |
+| `GCS_LOCATION` | 피드백 버킷 리전 | `asia-northeast3` |
 
 > 사용량 탭을 쓰지 않는 로컬에서는 `GOOGLE_SERVICE_ACCOUNT_JSON` 없이도 콜 품질/파손 판별 두 탭은 정상 동작합니다(트래킹만 조용히 실패).
+> 파손 판별 **피드백 저장**(👍/👎)은 BigQuery(`damage_feedback`)와 GCS 버킷을 쓰므로 `GOOGLE_SERVICE_ACCOUNT_JSON`이 필요합니다. 버킷은 첫 저장 시 자동 생성되며(서비스계정에 `storage.buckets.create` 권한 필요) 사진은 **90일 후 자동 삭제**됩니다. 열람은 관리자 `/feedback` 탭 전용.
 
 > 참고: 저장소의 예시 파일은 [`.env.local.example`](.env.local.example) 입니다.
 

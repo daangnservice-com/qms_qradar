@@ -2,6 +2,7 @@
   "verdict": "파손됨",
   "confidence": 0.87,
   "summary": "후면 우측 하단 모서리에 긁힘이 확인됨",
+  "comparison": "신청인 사진에는 긁힘이 뚜렷하나 피신청인 사진에서는 각도상 잘 보이지 않음",
   "findings": [
     { "location": "우측 하단 모서리", "type": "긁힘", "description": "3cm 가량 긁힌 자국", "photoIndex": 1, "box": { "ymin": 720, "xmin": 640, "ymax": 880, "xmax": 900 } }
   ],

@@ -14,11 +14,15 @@ export default function DamageUpload({
   onFiles,
   disabled,
   max = 8,
+  label = "상품 사진",
+  hint,
 }: {
   files: File[];
   onFiles: (files: File[]) => void;
   disabled?: boolean;
   max?: number;
+  label?: string;
+  hint?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
@@ -72,8 +76,8 @@ export default function DamageUpload({
         <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-white text-navy shadow-sm ring-1 ring-gray-200">
           <ImagePlus className="h-6 w-6" strokeWidth={1.8} />
         </div>
-        <p className="text-[15px] font-semibold text-gray-800">상품 사진을 드래그하거나 클릭해서 추가</p>
-        <p className="mt-1.5 text-[13px] text-gray-400">jpg · png · webp / 최대 {max}장 (여러 각도 권장)</p>
+        <p className="text-[15px] font-semibold text-gray-800">{label}을 드래그하거나 클릭해서 추가</p>
+        <p className="mt-1.5 text-[13px] text-gray-400">{hint ?? `jpg · png · webp / 최대 ${max}장 (여러 각도 권장)`}</p>
         <button
           type="button"
           onClick={(e) => {

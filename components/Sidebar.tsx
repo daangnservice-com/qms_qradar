@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
-import { BookOpen, PanelLeftClose, PanelLeftOpen, Phone, ScanSearch, BarChart3, LogOut, type LucideIcon } from "lucide-react";
+import { BookOpen, PanelLeftClose, PanelLeftOpen, Phone, ScanSearch, BarChart3, MessageSquareHeart, LogOut, type LucideIcon } from "lucide-react";
 import { isAdmin } from "@/lib/adminEmails";
 
 type NavItem = { label: string; href: string; icon: LucideIcon; adminOnly?: boolean };
@@ -12,6 +12,7 @@ type NavItem = { label: string; href: string; icon: LucideIcon; adminOnly?: bool
 const NAV: NavItem[] = [
   { label: "콜 품질 평가", href: "/", icon: Phone },
   { label: "파손 판별", href: "/damage", icon: ScanSearch },
+  { label: "피드백", href: "/feedback", icon: MessageSquareHeart, adminOnly: true },
   { label: "사용량", href: "/usage", icon: BarChart3, adminOnly: true },
 ];
 

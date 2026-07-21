@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
-import { Activity, BarChart3, Clock, Users, ChevronDown, ChevronRight } from "lucide-react";
+import { Activity, BarChart3, Clock, Users, Zap, ChevronDown, ChevronRight } from "lucide-react";
 import { isAdmin } from "@/lib/adminEmails";
 import type { UsageStats } from "@/lib/bigquery";
 
@@ -10,9 +10,19 @@ import type { UsageStats } from "@/lib/bigquery";
 const PATH_LABELS: Record<string, string> = {
   "/": "콜 품질 평가",
   "/damage": "파손 판별",
+  "/feedback": "피드백",
   "/usage": "사용량",
 };
 const pathLabel = (p: string) => PATH_LABELS[p] ?? p;
+
+// 액션 이벤트 → 기능 이름(표시용).
+const ACTION_LABELS: Record<string, string> = {
+  damage_detect: "파손 판별 실행",
+  call_evaluate: "콜 품질 평가 실행",
+  chat_ask: "챗봇 질문",
+  feedback_submit: "피드백 제출",
+};
+const actionLabel = (e: string) => ACTION_LABELS[e] ?? e;
 
 const PERIODS = [
   { days: 7, label: "최근 7일" },
@@ -85,6 +95,15 @@ function UserRow({ u }: { u: UsageStats["byUser"][number] }) {
               </span>
             ))}
             {u.paths.length === 0 && <span className="text-xs text-gray-400">기록 없음</span>}
+          </div>
+          <p className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-wide text-gray-400">기능별 사용</p>
+          <div className="flex flex-wrap gap-1.5">
+            {u.actions.map((a) => (
+              <span key={a.event} className="rounded-md bg-white px-2 py-1 text-xs text-gray-600 ring-1 ring-gray-200">
+                {actionLabel(a.event)} <span className="font-semibold text-brand">{a.count}</span>
+              </span>
+            ))}
+            {u.actions.length === 0 && <span className="text-xs text-gray-400">기록 없음</span>}
           </div>
           <p className="mb-1.5 mt-3 text-[11px] font-semibold uppercase tracking-wide text-gray-400">최근 마지막 접속</p>
           <p className="text-xs text-gray-600">{fmtDateTime(u.lastSeen)}</p>
@@ -172,8 +191,9 @@ export default function UsagePage() {
 
       {stats && (
         <div className={`mt-6 space-y-6 ${loading ? "opacity-60" : ""}`}>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <StatCard icon={Activity} label="총 조회수" value={stats.totalViews.toLocaleString()} />
+            <StatCard icon={Zap} label="총 기능 사용" value={stats.totalActions.toLocaleString()} />
             <StatCard icon={Users} label="접속 사용자" value={`${stats.totalUsers}명`} />
             <StatCard icon={Clock} label="기간" value={`${days}일`} />
           </div>
@@ -198,6 +218,28 @@ export default function UsagePage() {
                     <span className="w-20 shrink-0 text-right text-sm tabular-nums text-gray-500">
                       {p.views}회 · {p.users}명
                     </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-xl border border-gray-200 bg-white p-5">
+            <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-gray-700">
+              <Zap className="h-4 w-4 text-brand" />
+              기능별 사용
+            </h2>
+            {stats.byAction.length === 0 ? (
+              <p className="py-4 text-center text-sm text-gray-400">아직 기능 사용 기록이 없어요</p>
+            ) : (
+              <div className="space-y-2">
+                {stats.byAction.map((a) => (
+                  <div key={a.event} className="flex items-center gap-3">
+                    <span className="w-32 shrink-0 truncate text-sm text-gray-700">{actionLabel(a.event)}</span>
+                    <div className="h-5 flex-1 overflow-hidden rounded bg-gray-100">
+                      <div className="h-full rounded bg-brand/80" style={{ width: `${(a.count / Math.max(1, ...stats.byAction.map((x) => x.count))) * 100}%` }} />
+                    </div>
+                    <span className="w-20 shrink-0 text-right text-sm tabular-nums text-gray-500">{a.count}회 · {a.users}명</span>
                   </div>
                 ))}
               </div>

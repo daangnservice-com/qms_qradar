@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { saveTempFile, cleanupTempFile } from "@/lib/audio";
 import { evaluateFile } from "@/lib/evaluate";
+import { trackServerAction } from "@/lib/serverTrack";
 import { numEnv } from "@/lib/env";
 
 export const runtime = "nodejs";
@@ -30,6 +31,7 @@ export async function POST(req: Request): Promise<Response> {
     tempPath = await saveTempFile(bytes, ".m4a");
 
     const result = await evaluateFile(tempPath, { minSilenceSec, noiseDb });
+    await trackServerAction("/", "call_evaluate");
     return NextResponse.json(result, { status: 200 });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "처리 중 오류" }, { status: 500 });

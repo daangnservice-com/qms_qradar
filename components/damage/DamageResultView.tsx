@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ClipboardList, Images } from "lucide-react";
+import { ClipboardList, Images, GitCompareArrows } from "lucide-react";
 import type { DamageResult } from "@/lib/types";
+import { PARTY_LABEL } from "@/lib/types";
 import VerdictBadge from "./VerdictBadge";
 import AnnotatedImage, { type Overlay } from "./AnnotatedImage";
+import DamageFeedback from "./DamageFeedback";
+import DamageChat from "./DamageChat";
 
 export default function DamageResultView({ result, files }: { result: DamageResult; files: File[] }) {
   // 사진 blob URL: 단일 effect에서 생성+해제(StrictMode 재마운트에도 안전)
@@ -33,6 +36,17 @@ export default function DamageResultView({ result, files }: { result: DamageResu
         <p className="mt-3 text-sm leading-relaxed text-gray-700">{result.summary}</p>
       </div>
 
+      {/* 양측 비교 소견 */}
+      {result.comparison && (
+        <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-700">
+            <GitCompareArrows className="h-4 w-4 text-navy" />
+            양측 비교
+          </h3>
+          <p className="mt-3 text-sm leading-relaxed text-gray-700">{result.comparison}</p>
+        </div>
+      )}
+
       {/* 파손 근거 (번호 매김 + 호버 강조) */}
       <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
         <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-700">
@@ -56,6 +70,9 @@ export default function DamageResultView({ result, files }: { result: DamageResu
                   {f.number}
                 </span>
                 <span className="text-gray-700">
+                  <span className={`mr-1.5 inline-block rounded-md px-1.5 py-0.5 text-xs font-bold ${f.party === "claimant" ? "bg-navy/10 text-navy" : "bg-gray-200 text-gray-600"}`}>
+                    {PARTY_LABEL[f.party]}
+                  </span>
                   <span className="font-semibold text-gray-900">{f.location}</span>
                   <span className="mx-1.5 text-gray-300">·</span>
                   <span className="inline-block rounded-md bg-gap/10 px-1.5 py-0.5 text-xs font-medium text-gap">{f.type}</span>
@@ -68,36 +85,56 @@ export default function DamageResultView({ result, files }: { result: DamageResu
         )}
       </div>
 
-      {/* 사진별 오버레이 */}
+      {/* 사진별 오버레이 — 신청인/피신청인으로 분리 (urls는 신청인 사진 먼저) */}
       {urls.length > 0 && (
         <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
           <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-700">
             <Images className="h-4 w-4 text-navy" />
             사진별 파손 표시
           </h3>
-          <div className="mt-4 grid gap-5 sm:grid-cols-2">
-            {urls.map((url, i) => {
-              const overlays: Overlay[] = numbered
-                .filter((f) => f.photoIndex === i && f.box !== null)
-                .map((f) => ({ number: f.number, box: f.box! }));
-              const note = result.perPhoto.find((p) => p.index === i)?.note;
-              return (
-                <div key={i} className="space-y-2">
-                  <div className="text-xs font-medium text-gray-400">사진 {i + 1}</div>
-                  <AnnotatedImage
-                    url={url}
-                    alt={`사진 ${i + 1}`}
-                    overlays={overlays}
-                    hovered={hovered}
-                    onHover={setHovered}
-                  />
-                  {note && <p className="text-sm text-gray-600">{note}</p>}
+          <div className="mt-4 space-y-6">
+            {([
+              { party: "claimant" as const, start: 0, count: result.claimantCount },
+              { party: "respondent" as const, start: result.claimantCount, count: result.respondentCount },
+            ]).filter((g) => g.count > 0).map((g) => (
+              <div key={g.party}>
+                <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-gray-500">
+                  <span className={`inline-flex h-5 items-center rounded-md px-2 text-xs font-bold ${g.party === "claimant" ? "bg-navy/10 text-navy" : "bg-gray-200 text-gray-600"}`}>
+                    {PARTY_LABEL[g.party]}
+                  </span>
+                  <span className="h-px flex-1 bg-gray-100" />
                 </div>
-              );
-            })}
+                <div className="grid gap-5 sm:grid-cols-2">
+                  {Array.from({ length: g.count }, (_, k) => g.start + k).map((i, k) => {
+                    const overlays: Overlay[] = numbered
+                      .filter((f) => f.photoIndex === i && f.box !== null)
+                      .map((f) => ({ number: f.number, box: f.box! }));
+                    const note = result.perPhoto.find((p) => p.index === i)?.note;
+                    const label = `${PARTY_LABEL[g.party]} 사진 ${k + 1}`;
+                    return (
+                      <div key={i} className="space-y-2">
+                        <div className="text-xs font-medium text-gray-400">{label}</div>
+                        <AnnotatedImage
+                          url={urls[i]}
+                          alt={label}
+                          overlays={overlays}
+                          hovered={hovered}
+                          onHover={setHovered}
+                        />
+                        {note && <p className="text-sm text-gray-600">{note}</p>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       )}
+
+      <DamageChat result={result} files={files} />
+
+      <DamageFeedback result={result} files={files} />
     </section>
   );
 }

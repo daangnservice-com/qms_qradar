@@ -9,6 +9,13 @@ const nextConfig = {
   outputFileTracingIncludes: {
     "/api/evaluate": ["./node_modules/ffmpeg-static/**"],
   },
+
+  experimental: {
+    // /api/damage·/api/evaluate 업로드는 auth 미들웨어를 거치는데, 미들웨어를 통과하는
+    // 요청 바디는 기본 10MB로 잘린다(초과 시 multipart 깨져 클라이언트에 "Failed to fetch").
+    // 파손 판별 최악 payload = 파당 5장 × 10MB × 2 = 100MB. 여유 있게 상향.
+    middlewareClientMaxBodySize: 110 * 1024 * 1024,
+  },
 };
 
 export default nextConfig;

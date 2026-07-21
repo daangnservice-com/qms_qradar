@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/lib/evaluate", () => ({ evaluateFile: vi.fn() }));
 vi.mock("@/lib/audio", () => ({ saveTempFile: vi.fn(), cleanupTempFile: vi.fn() }));
+vi.mock("@/lib/serverTrack", () => ({ trackServerAction: vi.fn() }));
 
 import { evaluateFile } from "@/lib/evaluate";
 import { saveTempFile, cleanupTempFile } from "@/lib/audio";
