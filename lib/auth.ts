@@ -1,5 +1,6 @@
 import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
+import { isAdmin } from "./adminEmails";
 
 /** 이메일이 허용 도메인(@domain)에 속하는지 (대소문자 무시) */
 export function isAllowedEmail(email: string | null | undefined, domain: string): boolean {
@@ -17,6 +18,9 @@ export const authOptions: NextAuthOptions = {
   pages: { signIn: "/login" },
   callbacks: {
     async signIn({ user }) {
+      // 관리자(adminEmails.ts)는 허용 도메인과 무관하게 로그인 허용.
+      // 그 외에는 허용 도메인(@daangnservice.com)에 속한 계정만 로그인.
+      if (isAdmin(user.email)) return true;
       return isAllowedEmail(user.email, process.env.ALLOWED_EMAIL_DOMAIN ?? "daangnservice.com");
     },
   },
