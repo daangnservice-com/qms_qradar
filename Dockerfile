@@ -24,10 +24,6 @@ ENV NEXT_TELEMETRY_DISABLED 1
 RUN groupadd -g 1001 nodejs && \
     useradd -u 1001 -g nodejs nextjs
 
-COPY --from=builder /app/public ./public
-RUN mkdir .next && chown nextjs:nodejs .next
-
-# Standalone 빌드 결과물 복사
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
