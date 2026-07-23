@@ -89,7 +89,8 @@ export async function runGeminiEvaluation(filePath: string, silences: Silence[],
   const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
   const fileManager = new GoogleAIFileManager(apiKey);
-  const uploaded = await fileManager.uploadFile(filePath, { mimeType: "audio/mp4", displayName: "call.m4a" });
+  // 업로드 전 wav로 정규화된 파일(lib/audio.transcodeToWav)을 받는다.
+  const uploaded = await fileManager.uploadFile(filePath, { mimeType: "audio/wav", displayName: "call.wav" });
 
   // 파일이 ACTIVE 될 때까지 대기 (최대 120초 / 60회 시도)
   const MAX_POLL_ATTEMPTS = 60;

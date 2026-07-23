@@ -16,6 +16,15 @@ export interface EvaluationResult {
   silences: Silence[];
   silenceSummary: SilenceSummary;
   evaluation: Evaluation;
+  conversationId?: string; // Genesys 대화 ID(샘플 평가 출처)
+}
+
+// BigQuery 평가 뷰(vw_qradar_evaluation_cases)에서 고른 평가 대상 샘플 1건.
+export interface EvaluationSample {
+  conversationId: string; // Genesys conversation_id → 녹취 확보 키
+  phoneInquiryId: string; // 상담이력 ID
+  contentSnippet: string; // 상담이력 미리보기(앞부분)
+  yearMonth: string; // 상담 연월
 }
 
 export type DamageVerdict = "파손됨" | "정상" | "불확실";

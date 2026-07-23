@@ -2,48 +2,45 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { isKarla } from "@/lib/adminEmails";
-import { saveTempFile, cleanupTempFile } from "@/lib/audio";
+import { saveTempFile, cleanupTempFile, transcodeToWav } from "@/lib/audio";
+import { getConversationAudioUrl, downloadAudio } from "@/lib/genesys";
 import { evaluateFile } from "@/lib/evaluate";
 import { trackServerAction } from "@/lib/serverTrack";
 import { numEnv } from "@/lib/env";
 
 export const runtime = "nodejs";
-export const maxDuration = 60; // Vercel 배포 시 상한(로컬은 무제한)
+export const maxDuration = 300; // EC2 상주 배포 기준. Genesys 폴링 + 트랜스코딩 + Gemini 여유.
 
+// conversation_id로 Genesys 녹취를 받아와 콜 품질을 평가한다. (karla 단독 접근)
 export async function POST(req: Request): Promise<Response> {
-  // 콜 품질 평가는 karla 단독 접근.
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (!isKarla(session.user.email)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  let tempPath: string | null = null;
+  const tempPaths: string[] = [];
   try {
-    const fd = await req.formData();
-    const file = fd.get("file");
-    if (!(file instanceof File)) {
-      return NextResponse.json({ error: "파일이 없습니다." }, { status: 400 });
-    }
-    if (!file.name.toLowerCase().endsWith(".m4a")) {
-      return NextResponse.json({ error: "m4a 파일만 지원합니다." }, { status: 400 });
-    }
-    const maxMb = numEnv("MAX_UPLOAD_MB", 200);
-    if (file.size > maxMb * 1024 * 1024) {
-      return NextResponse.json({ error: `최대 ${maxMb}MB까지 업로드할 수 있습니다.` }, { status: 400 });
-    }
+    const body = (await req.json()) as { conversationId?: string; minSilenceSec?: number };
+    const conversationId = (body.conversationId ?? "").trim();
+    if (!conversationId) return NextResponse.json({ error: "conversationId가 필요합니다." }, { status: 400 });
 
-    const raw = Number(fd.get("minSilenceSec") ?? 3);
+    const raw = Number(body.minSilenceSec ?? 3);
     const minSilenceSec = Math.min(10, Math.max(1, Number.isFinite(raw) ? raw : 3));
     const noiseDb = numEnv("SILENCE_NOISE_DB", -30);
 
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    tempPath = await saveTempFile(bytes, ".m4a");
+    // Genesys에서 녹취 다운로드 URL → 오디오 bytes → 임시파일 → wav 정규화
+    const url = await getConversationAudioUrl(conversationId);
+    const { bytes } = await downloadAudio(url);
+    const srcPath = await saveTempFile(bytes, ".audio");
+    tempPaths.push(srcPath);
+    const wavPath = await transcodeToWav(srcPath);
+    tempPaths.push(wavPath);
 
-    const result = await evaluateFile(tempPath, { minSilenceSec, noiseDb });
+    const result = await evaluateFile(wavPath, { minSilenceSec, noiseDb });
     await trackServerAction("/call-quality", "call_evaluate");
-    return NextResponse.json(result, { status: 200 });
+    return NextResponse.json({ ...result, conversationId }, { status: 200 });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "처리 중 오류" }, { status: 500 });
   } finally {
-    if (tempPath) await cleanupTempFile(tempPath);
+    for (const p of tempPaths) await cleanupTempFile(p);
   }
 }

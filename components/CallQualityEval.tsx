@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Phone } from "lucide-react";
 import type { EvaluationResult } from "@/lib/types";
-import UploadForm from "@/components/UploadForm";
+import SampleList from "@/components/SampleList";
 import ResultView from "@/components/ResultView";
 
 export default function CallQualityEval() {
@@ -17,11 +17,11 @@ export default function CallQualityEval() {
           콜 품질 평가
         </h1>
         <p className="mt-1.5 text-sm text-gray-500">
-          상담 통화 녹음을 업로드하면 AI가 품질을 평가하고 공백(검색 대기) 구간을 초 단위로 분석해요
+          BigQuery 평가 샘플에서 통화를 고르면 Genesys에서 녹취를 받아 AI가 품질을 평가하고 공백(검색 대기) 구간을 초 단위로 분석해요
         </p>
       </header>
       <div className="mt-8">
-        <UploadForm onResult={setResult} />
+        <SampleList onResult={setResult} />
         {result && <ResultView result={result} />}
       </div>
     </div>
