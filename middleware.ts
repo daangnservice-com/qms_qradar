@@ -6,5 +6,5 @@ export default withAuth({
 });
 
 export const config = {
-  matcher: ["/((?!api/auth|login|_next/static|_next/image|favicon.ico|icon.png|robots.txt).*)"],
+  matcher: ["/((?!api/auth|api/health|login|_next/static|_next/image|favicon.ico|icon.png|robots.txt).*)"], // ← api/health 예외 추가
 };
