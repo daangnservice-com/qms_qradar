@@ -1,4 +1,7 @@
 import { NextResponse } from "next/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { isKarla } from "@/lib/adminEmails";
 import { saveTempFile, cleanupTempFile } from "@/lib/audio";
 import { evaluateFile } from "@/lib/evaluate";
 import { trackServerAction } from "@/lib/serverTrack";
@@ -8,6 +11,11 @@ export const runtime = "nodejs";
 export const maxDuration = 60; // Vercel 배포 시 상한(로컬은 무제한)
 
 export async function POST(req: Request): Promise<Response> {
+  // 콜 품질 평가는 karla 단독 접근.
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!isKarla(session.user.email)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+
   let tempPath: string | null = null;
   try {
     const fd = await req.formData();
@@ -31,7 +39,7 @@ export async function POST(req: Request): Promise<Response> {
     tempPath = await saveTempFile(bytes, ".m4a");
 
     const result = await evaluateFile(tempPath, { minSilenceSec, noiseDb });
-    await trackServerAction("/", "call_evaluate");
+    await trackServerAction("/call-quality", "call_evaluate");
     return NextResponse.json(result, { status: 200 });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "처리 중 오류" }, { status: 500 });

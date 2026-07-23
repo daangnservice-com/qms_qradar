@@ -9,6 +9,7 @@ import type { UsageStats } from "@/lib/bigquery";
 // 경로 → 화면 이름(표시용). 새 페이지가 생기면 여기에 추가.
 const PATH_LABELS: Record<string, string> = {
   "/": "콜 품질 평가",
+  "/call-quality": "콜 품질 평가",
   "/damage": "파손 판별",
   "/feedback": "피드백",
   "/usage": "사용량",
