@@ -10,9 +10,14 @@ export function isAdmin(email: string | null | undefined): boolean {
   return !!email && ADMIN_EMAILS.includes(email.toLowerCase());
 }
 
-// 콜 품질 평가는 karla 단독 접근(/ 및 /api/evaluate). 관리자 그룹보다 더 엄격.
-export const KARLA_EMAIL = "karla@daangnservice.com";
+// 콜 품질 평가 접근 허용 계정(관리자 그룹 ADMIN_EMAILS와 별개의 화이트리스트).
+export const CALL_QUALITY_EMAILS = [
+  "karla@daangnservice.com",
+  "laika@daangnservice.com",
+  "amir@daangnservice.com",
+  "riley.lee@daangnservice.com",
+];
 
-export function isKarla(email: string | null | undefined): boolean {
-  return !!email && email.toLowerCase() === KARLA_EMAIL;
+export function canAccessCallQuality(email: string | null | undefined): boolean {
+  return !!email && CALL_QUALITY_EMAILS.includes(email.toLowerCase());
 }

@@ -19,9 +19,15 @@ describe("GET /api/call-quality/samples", () => {
     expect((await GET(req())).status).toBe(401);
   });
 
-  it("403 for a non-karla account", async () => {
+  it("403 for an account not on the allowlist", async () => {
     (getServerSession as any).mockResolvedValue({ user: { email: "someone@daangnservice.com" } });
     expect((await GET(req())).status).toBe(403);
+  });
+
+  it("allows the added call-quality members (e.g. laika)", async () => {
+    (getServerSession as any).mockResolvedValue({ user: { email: "laika@daangnservice.com" } });
+    (listEvaluationSamples as any).mockResolvedValue([]);
+    expect((await GET(req())).status).toBe(200);
   });
 
   it("returns samples for karla", async () => {

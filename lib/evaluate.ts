@@ -20,7 +20,9 @@ export async function evaluateFile(
   filePath: string,
   opts: { minSilenceSec: number; noiseDb: number },
 ): Promise<EvaluationResult> {
+  const ts0 = Date.now();
   const { durationSec, silences, summary } = await runSilenceDetection(filePath, opts);
+  const ts1 = Date.now();
 
   let evaluation: Evaluation;
   try {
@@ -28,6 +30,7 @@ export async function evaluateFile(
   } catch (e) {
     evaluation = emptyEvaluation(e instanceof Error ? e.message : String(e));
   }
+  console.log(`[evaluate] silence=${ts1 - ts0}ms gemini=${Date.now() - ts1}ms (call ${durationSec.toFixed(0)}s)`);
 
   return {
     durationSec,

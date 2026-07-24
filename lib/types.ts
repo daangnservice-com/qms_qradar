@@ -19,12 +19,14 @@ export interface EvaluationResult {
   conversationId?: string; // Genesys 대화 ID(샘플 평가 출처)
 }
 
-// BigQuery 평가 뷰(vw_qradar_evaluation_cases)에서 고른 평가 대상 샘플 1건.
+// BigQuery 평가 테이블(qradar_evaluation_cases)에서 고른 평가 대상 샘플 1건.
 export interface EvaluationSample {
   conversationId: string; // Genesys conversation_id → 녹취 확보 키
   phoneInquiryId: string; // 상담이력 ID
   contentSnippet: string; // 상담이력 미리보기(앞부분)
+  inquiryCreatedAt: string; // 문의 생성시간(inquiry_created_at_kst)
   yearMonth: string; // 상담 연월
+  callDurationSec: number | null; // 통화 길이(초). call_end-call_start 우선, minutes_taken 폴백
 }
 
 export type DamageVerdict = "파손됨" | "정상" | "불확실";

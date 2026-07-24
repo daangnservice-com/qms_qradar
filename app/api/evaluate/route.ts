@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { isKarla } from "@/lib/adminEmails";
+import { canAccessCallQuality } from "@/lib/adminEmails";
 import { saveTempFile, cleanupTempFile, transcodeToWav } from "@/lib/audio";
 import { getConversationAudioUrl, downloadAudio } from "@/lib/genesys";
 import { evaluateFile } from "@/lib/evaluate";
@@ -15,7 +15,7 @@ export const maxDuration = 300; // EC2 상주 배포 기준. Genesys 폴링 + �
 export async function POST(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  if (!isKarla(session.user.email)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!canAccessCallQuality(session.user.email)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const tempPaths: string[] = [];
   try {
@@ -28,14 +28,22 @@ export async function POST(req: Request): Promise<Response> {
     const noiseDb = numEnv("SILENCE_NOISE_DB", -30);
 
     // Genesys에서 녹취 다운로드 URL → 오디오 bytes → 임시파일 → wav 정규화
+    const t0 = Date.now();
     const url = await getConversationAudioUrl(conversationId);
+    const t1 = Date.now();
     const { bytes } = await downloadAudio(url);
+    const t2 = Date.now();
     const srcPath = await saveTempFile(bytes, ".audio");
     tempPaths.push(srcPath);
     const wavPath = await transcodeToWav(srcPath);
     tempPaths.push(wavPath);
+    const t3 = Date.now();
 
     const result = await evaluateFile(wavPath, { minSilenceSec, noiseDb });
+    const t4 = Date.now();
+    console.log(
+      `[evaluate] genesys=${t1 - t0}ms download=${t2 - t1}ms transcode=${t3 - t2}ms evaluate=${t4 - t3}ms total=${t4 - t0}ms`,
+    );
     await trackServerAction("/call-quality", "call_evaluate");
     return NextResponse.json({ ...result, conversationId }, { status: 200 });
   } catch (e) {

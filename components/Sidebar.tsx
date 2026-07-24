@@ -5,12 +5,12 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { BookOpen, PanelLeftClose, PanelLeftOpen, Phone, ScanSearch, BarChart3, MessageSquareHeart, LogOut, type LucideIcon } from "lucide-react";
-import { isAdmin, isKarla } from "@/lib/adminEmails";
+import { isAdmin, canAccessCallQuality } from "@/lib/adminEmails";
 
-type NavItem = { label: string; href: string; icon: LucideIcon; adminOnly?: boolean; karlaOnly?: boolean };
+type NavItem = { label: string; href: string; icon: LucideIcon; adminOnly?: boolean; callQualityOnly?: boolean };
 
 const NAV: NavItem[] = [
-  { label: "콜 품질 평가", href: "/call-quality", icon: Phone, karlaOnly: true },
+  { label: "콜 품질 평가", href: "/call-quality", icon: Phone, callQualityOnly: true },
   { label: "파손 판별", href: "/damage", icon: ScanSearch },
   { label: "피드백", href: "/feedback", icon: MessageSquareHeart, adminOnly: true },
   { label: "사용량", href: "/usage", icon: BarChart3, adminOnly: true },
@@ -21,8 +21,8 @@ export default function Sidebar() {
   const pathname = usePathname();
   const { data: session } = useSession();
   const admin = isAdmin(session?.user?.email);
-  const karla = isKarla(session?.user?.email);
-  const navItems = NAV.filter((item) => (!item.adminOnly || admin) && (!item.karlaOnly || karla));
+  const callQuality = canAccessCallQuality(session?.user?.email);
+  const navItems = NAV.filter((item) => (!item.adminOnly || admin) && (!item.callQualityOnly || callQuality));
 
   return (
     <aside

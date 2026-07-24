@@ -1,18 +1,28 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Sparkles, Loader2, AlertCircle, RefreshCw, Phone } from "lucide-react";
+import { Sparkles, Loader2, AlertCircle, RefreshCw, Phone, Clock, CheckCircle2, Eye } from "lucide-react";
 import type { EvaluationResult, EvaluationSample } from "@/lib/types";
 import { describeApiError } from "@/lib/apiError";
+import { formatClock } from "@/lib/format";
 import ThresholdSlider from "./ThresholdSlider";
 
-export default function SampleList({ onResult }: { onResult: (r: EvaluationResult) => void }) {
+export default function SampleList({
+  onResult,
+  evaluatedIds,
+  onView,
+}: {
+  onResult: (r: EvaluationResult) => void;
+  evaluatedIds: Set<string>;
+  onView: (conversationId: string) => void;
+}) {
   const [samples, setSamples] = useState<EvaluationSample[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [minSilenceSec, setMinSilenceSec] = useState(3);
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null);
   const [evalError, setEvalError] = useState<string | null>(null);
+  const [showDone, setShowDone] = useState(false);
 
   async function loadSamples() {
     setLoadingList(true);
@@ -45,6 +55,8 @@ export default function SampleList({ onResult }: { onResult: (r: EvaluationResul
       });
       if (!res.ok) throw new Error(await describeApiError(res));
       onResult((await res.json()) as EvaluationResult);
+      setShowDone(true);
+      window.setTimeout(() => setShowDone(false), 2800);
     } catch (e) {
       setEvalError(e instanceof Error ? e.message : "평가에 실패했어요");
     } finally {
@@ -96,36 +108,62 @@ export default function SampleList({ onResult }: { onResult: (r: EvaluationResul
         <ul className="divide-y divide-gray-100 overflow-hidden rounded-2xl border border-gray-200 bg-white">
           {samples.map((s) => {
             const busy = evaluatingId === s.conversationId;
+            const done = evaluatedIds.has(s.conversationId);
             return (
               <li key={s.conversationId} className="flex items-center gap-4 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 text-sm">
                     <span className="font-semibold text-gray-900">{s.phoneInquiryId || "(ID 없음)"}</span>
-                    {s.yearMonth && (
-                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500">{s.yearMonth}</span>
+                    {done && (
+                      <span className="inline-flex items-center gap-1 rounded bg-green-50 px-1.5 py-0.5 text-[11px] font-medium text-green-700">
+                        <CheckCircle2 className="h-3 w-3" />
+                        완료
+                      </span>
+                    )}
+                    {(s.inquiryCreatedAt || s.yearMonth) && (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500">
+                        {s.inquiryCreatedAt || s.yearMonth}
+                      </span>
+                    )}
+                    {s.callDurationSec != null && (
+                      <span className="inline-flex items-center gap-1 rounded bg-navy/10 px-1.5 py-0.5 text-[11px] font-medium text-navy">
+                        <Clock className="h-3 w-3" />
+                        {formatClock(s.callDurationSec)}
+                      </span>
                     )}
                   </div>
                   <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">{s.conversationId}</p>
                   {s.contentSnippet && <p className="mt-1 line-clamp-2 text-xs text-gray-500">{s.contentSnippet}</p>}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => evaluate(s.conversationId)}
-                  disabled={!!evaluatingId}
-                  className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {busy ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      평가 중…
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="h-3.5 w-3.5" />
-                      평가
-                    </>
-                  )}
-                </button>
+                {done && !busy ? (
+                  <button
+                    type="button"
+                    onClick={() => onView(s.conversationId)}
+                    className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-navy px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-navy-hover"
+                  >
+                    <Eye className="h-3.5 w-3.5" />
+                    결과 보기
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => evaluate(s.conversationId)}
+                    disabled={!!evaluatingId}
+                    className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {busy ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        평가 중…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-3.5 w-3.5" />
+                        평가
+                      </>
+                    )}
+                  </button>
+                )}
               </li>
             );
           })}
@@ -137,6 +175,13 @@ export default function SampleList({ onResult }: { onResult: (r: EvaluationResul
           <Phone className="h-3.5 w-3.5" />
           Genesys에서 녹취를 받아 평가 중이에요 (통화 길이에 따라 수십 초~수 분)
         </p>
+      )}
+
+      {showDone && (
+        <div className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-xl border border-green-200 bg-white px-4 py-3 text-sm font-semibold text-green-700 shadow-lg">
+          <CheckCircle2 className="h-4 w-4" />
+          평가 완료 — 오른쪽에서 결과를 확인하세요
+        </div>
       )}
     </div>
   );

@@ -4,10 +4,18 @@ import { useState } from "react";
 import { Phone } from "lucide-react";
 import type { EvaluationResult } from "@/lib/types";
 import SampleList from "@/components/SampleList";
-import ResultView from "@/components/ResultView";
+import ResultDrawer from "@/components/ResultDrawer";
 
 export default function CallQualityEval() {
-  const [result, setResult] = useState<EvaluationResult | null>(null);
+  // 평가한 결과를 conversationId별로 모두 보관해, 다른 항목을 평가해도 완료 표시가 유지되게 한다.
+  const [results, setResults] = useState<Record<string, EvaluationResult>>({});
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const openFor = (id: string) => {
+    setActiveId(id);
+    setDrawerOpen(true);
+  };
 
   return (
     <div className="mx-auto w-full max-w-4xl px-6 py-8 sm:px-10">
@@ -21,9 +29,17 @@ export default function CallQualityEval() {
         </p>
       </header>
       <div className="mt-8">
-        <SampleList onResult={setResult} />
-        {result && <ResultView result={result} />}
+        <SampleList
+          onResult={(r) => {
+            const id = r.conversationId ?? "";
+            setResults((prev) => ({ ...prev, [id]: r }));
+            openFor(id);
+          }}
+          evaluatedIds={new Set(Object.keys(results))}
+          onView={openFor}
+        />
       </div>
+      <ResultDrawer open={drawerOpen} result={activeId ? results[activeId] ?? null : null} onClose={() => setDrawerOpen(false)} />
     </div>
   );
 }
