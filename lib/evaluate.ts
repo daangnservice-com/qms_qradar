@@ -2,6 +2,7 @@ import { runSilenceDetection, summarizeSilences, computeSpeechGaps } from "./sil
 import { runGeminiEvaluation, type GeminiScoring } from "./gemini";
 import { transcribeCall, mapSpeaker, type SttSegment } from "./stt";
 import { maskPII } from "./pii";
+import type { CallQualityOrg } from "./callQualityOrg";
 import type { Evaluation, EvaluationResult, TranscriptSegment } from "./types";
 
 function emptyScoring(error: string): GeminiScoring {
@@ -13,6 +14,7 @@ function emptyScoring(error: string): GeminiScoring {
     },
     overallSummary: "",
     silenceComments: [],
+    csChecklist: [],
     agentSpeakerTag: null,
     error,
   };
@@ -20,9 +22,11 @@ function emptyScoring(error: string): GeminiScoring {
 
 export async function evaluateFile(
   filePath: string,
-  opts: { minSilenceSec: number; noiseDb: number },
+  opts: { minSilenceSec: number; noiseDb: number; org?: CallQualityOrg },
   sourcePath: string = filePath,
 ): Promise<EvaluationResult> {
+  // CS 영역 체크리스트는 성장문화실(growth)에만 적용(페이팀 기준은 대기).
+  const checklist = opts.org === "growth";
   const t0 = Date.now();
   // ffmpeg 무음(진짜 조용한 구간). STT가 되면 무발화 공백을 대신 쓴다(보류음/배경음에도 강함).
   const { durationSec, silences: ffmpegSilences, summary: ffmpegSummary } = await runSilenceDetection(filePath, opts);
@@ -49,7 +53,7 @@ export async function evaluateFile(
 
   let scoring: GeminiScoring;
   try {
-    scoring = await runGeminiEvaluation(filePath, silences, summary, stt);
+    scoring = await runGeminiEvaluation(filePath, silences, summary, stt, { checklist });
   } catch (e) {
     scoring = emptyScoring(e instanceof Error ? e.message : String(e));
   }
@@ -73,6 +77,12 @@ export async function evaluateFile(
     },
     overallSummary: maskPII(scoring.overallSummary),
     silenceComments: scoring.silenceComments.map((c) => ({ ...c, note: maskPII(c.note) })),
+    // 체크리스트 근거 인용문·사유도 전사에서 온 것이라 PII 마스킹.
+    csChecklist: (scoring.csChecklist ?? []).map((c) => ({
+      ...c,
+      reason: maskPII(c.reason),
+      evidence: c.evidence.map((e) => ({ ...e, quote: maskPII(e.quote) })),
+    })),
     transcript,
     error: scoring.error ?? sttError,
   };

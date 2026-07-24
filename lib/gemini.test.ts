@@ -23,6 +23,17 @@ describe("buildEvaluationPrompt", () => {
     expect(p).toContain("agentSpeakerTag"); // 상담원 화자 판별 지시
     expect(p).toContain("환불하고 싶어요"); // STT 스크립트 포함
   });
+
+  it("omits CS checklist by default, includes it only when checklist=true (growth)", () => {
+    const off = buildEvaluationPrompt(silences, summary, stt);
+    expect(off).not.toContain("CS 영역 감점 체크리스트");
+    expect(off).not.toContain("[416]");
+
+    const on = buildEvaluationPrompt(silences, summary, stt, true);
+    expect(on).toContain("CS 영역 감점 체크리스트"); // 체크리스트 블록
+    expect(on).toContain("[416]"); // 항목 id 포함
+    expect(on).toContain("[429]");
+  });
 });
 
 describe("parseEvaluation", () => {
@@ -43,6 +54,25 @@ describe("parseEvaluation", () => {
     );
     expect(ev.scores.attitude.score).toBe(5);
     expect(ev.silenceComments).toEqual([]);
+    expect(ev.csChecklist).toEqual([]); // 없으면 빈 배열
     expect(ev.agentSpeakerTag).toBe(2);
+  });
+
+  it("parses csChecklist with evidence", () => {
+    const ev = parseEvaluation(
+      JSON.stringify({
+        scores: { attitude: { score: 3, comment: "a" }, resolution: { score: 3, comment: "b" }, flow: { score: 3, comment: "c" } },
+        overallSummary: "s",
+        silenceComments: [],
+        csChecklist: [
+          { id: 407, violated: true, evidence: [{ atSec: 1.2, quote: "네 말씀하세요" }], reason: "첫인사 없음" },
+          { id: 416, violated: false, evidence: [], reason: "겹침 없음" },
+        ],
+        agentSpeakerTag: 1,
+      }),
+    );
+    expect(ev.csChecklist).toHaveLength(2);
+    expect(ev.csChecklist[0]).toEqual({ id: 407, violated: true, evidence: [{ atSec: 1.2, quote: "네 말씀하세요" }], reason: "첫인사 없음" });
+    expect(ev.csChecklist[1].violated).toBe(false);
   });
 });

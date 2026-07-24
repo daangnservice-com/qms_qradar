@@ -24,13 +24,17 @@ describe("evaluateFile", () => {
     (runSilenceDetection as any).mockResolvedValue(silencePayload);
     (runGeminiEvaluation as any).mockResolvedValue({
       scores: { attitude: { score: 4, comment: "a" }, resolution: { score: 3, comment: "b" }, flow: { score: 2, comment: "c" } },
-      overallSummary: "s", silenceComments: [], error: null,
+      overallSummary: "s", silenceComments: [],
+      csChecklist: [{ id: 407, violated: true, evidence: [{ atSec: 1, quote: "연락처 010-1234-5678" }], reason: "r" }],
+      agentSpeakerTag: null, error: null,
     });
     const r = await evaluateFile("/tmp/x.m4a", { minSilenceSec: 3, noiseDb: -30 });
     expect(r.durationSec).toBe(1000);
     expect(r.silences).toHaveLength(1);
     expect(r.silenceSummary.count).toBe(1);
     expect(r.evaluation.scores.attitude.score).toBe(4);
+    expect(r.evaluation.csChecklist?.[0].id).toBe(407);
+    expect(r.evaluation.csChecklist?.[0].evidence[0].quote).toBe("연락처 010-****-5678"); // 근거 인용도 PII 마스킹
     expect(r.threshold).toEqual({ minSilenceSec: 3, noiseDb: -30 });
   });
 

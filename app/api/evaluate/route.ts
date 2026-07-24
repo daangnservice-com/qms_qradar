@@ -48,7 +48,7 @@ export async function POST(req: Request): Promise<Response> {
     tempPaths.push(wavPath);
     const t3 = Date.now();
 
-    const result = await evaluateFile(wavPath, { minSilenceSec, noiseDb }, srcPath);
+    const result = await evaluateFile(wavPath, { minSilenceSec, noiseDb, org }, srcPath);
     const t4 = Date.now();
     console.log(
       `[evaluate] genesys=${t1 - t0}ms download=${t2 - t1}ms transcode=${t3 - t2}ms evaluate=${t4 - t3}ms total=${t4 - t0}ms`,

@@ -1,7 +1,8 @@
 import { GoogleGenerativeAI, type Schema } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import { formatClock } from "./format";
-import type { Silence, SilenceSummary, ScoreDetail } from "./types";
+import { buildChecklistPromptBlock } from "./csChecklist";
+import type { Silence, SilenceSummary, ScoreDetail, ChecklistResult } from "./types";
 import type { SttSegment } from "./stt";
 
 // Gemini 채점 결과(전사는 STT가 담당하므로 여기서 생성하지 않는다).
@@ -9,11 +10,17 @@ export interface GeminiScoring {
   scores: { attitude: ScoreDetail; resolution: ScoreDetail; flow: ScoreDetail };
   overallSummary: string;
   silenceComments: { atSec: number; note: string }[];
+  csChecklist: ChecklistResult[]; // CS 영역 감점 체크리스트(항목별 위반+근거)
   agentSpeakerTag: number | null; // STT 화자 태그 중 상담원에 해당하는 번호
   error: string | null;
 }
 
-export function buildEvaluationPrompt(silences: Silence[], summary: SilenceSummary, stt: SttSegment[]): string {
+export function buildEvaluationPrompt(
+  silences: Silence[],
+  summary: SilenceSummary,
+  stt: SttSegment[],
+  checklist: boolean = false,
+): string {
   const lines = silences
     .map((s) => `- ${formatClock(s.startSec)}~${formatClock(s.endSec)} (${s.durationSec.toFixed(1)}초)`)
     .join("\n") || "- (기준 이상 공백 없음)";
@@ -38,31 +45,55 @@ export function buildEvaluationPrompt(silences: Silence[], summary: SilenceSumma
     script,
     "",
     "이 스크립트에서 **상담원(고객센터 직원)에 해당하는 화자 번호**를 agentSpeakerTag로 알려주세요(판단 불가하면 null).",
+    // CS 영역 체크리스트는 성장문화실(growth)에만 적용. 조직별 기준이 다르므로 플래그로 분기.
+    ...(checklist ? ["", buildChecklistPromptBlock()] : []),
+    "",
     "반드시 지정된 JSON 스키마로만 응답하세요.",
   ].join("\n");
 }
 
-const RESPONSE_SCHEMA = {
-  type: "object",
-  properties: {
-    scores: {
-      type: "object",
-      properties: {
-        attitude: { type: "object", properties: { score: { type: "integer" }, comment: { type: "string" } }, required: ["score", "comment"] },
-        resolution: { type: "object", properties: { score: { type: "integer" }, comment: { type: "string" } }, required: ["score", "comment"] },
-        flow: { type: "object", properties: { score: { type: "integer" }, comment: { type: "string" } }, required: ["score", "comment"] },
+const CHECKLIST_SCHEMA = {
+  type: "array",
+  items: {
+    type: "object",
+    properties: {
+      id: { type: "integer" },
+      violated: { type: "boolean" },
+      evidence: {
+        type: "array",
+        items: { type: "object", properties: { atSec: { type: "number" }, quote: { type: "string" } }, required: ["atSec", "quote"] },
       },
-      required: ["attitude", "resolution", "flow"],
+      reason: { type: "string" },
     },
-    overallSummary: { type: "string" },
-    silenceComments: {
-      type: "array",
-      items: { type: "object", properties: { atSec: { type: "number" }, note: { type: "string" } }, required: ["atSec", "note"] },
-    },
-    agentSpeakerTag: { type: "integer", nullable: true },
+    required: ["id", "violated", "reason"],
   },
-  required: ["scores", "overallSummary", "silenceComments"],
 } as const;
+
+// 응답 스키마. CS 체크리스트는 성장문화실(growth)에만 요구(checklist=true).
+function buildResponseSchema(checklist: boolean) {
+  return {
+    type: "object",
+    properties: {
+      scores: {
+        type: "object",
+        properties: {
+          attitude: { type: "object", properties: { score: { type: "integer" }, comment: { type: "string" } }, required: ["score", "comment"] },
+          resolution: { type: "object", properties: { score: { type: "integer" }, comment: { type: "string" } }, required: ["score", "comment"] },
+          flow: { type: "object", properties: { score: { type: "integer" }, comment: { type: "string" } }, required: ["score", "comment"] },
+        },
+        required: ["attitude", "resolution", "flow"],
+      },
+      overallSummary: { type: "string" },
+      silenceComments: {
+        type: "array",
+        items: { type: "object", properties: { atSec: { type: "number" }, note: { type: "string" } }, required: ["atSec", "note"] },
+      },
+      ...(checklist ? { csChecklist: CHECKLIST_SCHEMA } : {}),
+      agentSpeakerTag: { type: "integer", nullable: true },
+    },
+    required: ["scores", "overallSummary", "silenceComments", ...(checklist ? ["csChecklist"] : [])],
+  };
+}
 
 export function parseEvaluation(jsonText: string): GeminiScoring {
   const cleaned = jsonText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -78,6 +109,16 @@ export function parseEvaluation(jsonText: string): GeminiScoring {
     silenceComments: Array.isArray(o.silenceComments)
       ? o.silenceComments.map((c: { atSec: number; note: string }) => ({ atSec: Number(c.atSec), note: String(c.note) }))
       : [],
+    csChecklist: Array.isArray(o.csChecklist)
+      ? o.csChecklist.map((c: { id: number; violated: boolean; evidence?: { atSec: number; quote: string }[]; reason?: string }) => ({
+          id: Number(c.id),
+          violated: Boolean(c.violated),
+          evidence: Array.isArray(c.evidence)
+            ? c.evidence.map((e) => ({ atSec: Number(e.atSec), quote: String(e.quote) }))
+            : [],
+          reason: String(c.reason ?? ""),
+        }))
+      : [],
     agentSpeakerTag: tag == null || Number.isNaN(Number(tag)) ? null : Number(tag),
     error: null,
   };
@@ -88,7 +129,9 @@ export async function runGeminiEvaluation(
   silences: Silence[],
   summary: SilenceSummary,
   stt: SttSegment[],
+  opts: { checklist?: boolean } = {},
 ): Promise<GeminiScoring> {
+  const checklist = opts.checklist ?? false;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 미설정");
   const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
@@ -117,11 +160,11 @@ export async function runGeminiEvaluation(
     const genAI = new GoogleGenerativeAI(apiKey);
     const gm = genAI.getGenerativeModel({
       model,
-      generationConfig: { responseMimeType: "application/json", responseSchema: RESPONSE_SCHEMA as unknown as Schema },
+      generationConfig: { responseMimeType: "application/json", responseSchema: buildResponseSchema(checklist) as unknown as Schema },
     });
     const result = await gm.generateContent([
       { fileData: { fileUri: file.uri, mimeType: file.mimeType } },
-      { text: buildEvaluationPrompt(silences, summary, stt) },
+      { text: buildEvaluationPrompt(silences, summary, stt, checklist) },
     ]);
     return parseEvaluation(result.response.text());
   } finally {

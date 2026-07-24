@@ -3,11 +3,15 @@ export interface SilenceSummary { count: number; totalSec: number; longestSec: n
 export interface Threshold { minSilenceSec: number; noiseDb: number; }
 export interface ScoreDetail { score: number; comment: string; }
 export interface TranscriptSegment { atSec: number; speaker: string; text: string; }
+// CS 영역 체크리스트 1개 항목의 AI 판정. id=evaluation_criterions_id(lib/csChecklist.ts).
+export interface ChecklistEvidence { atSec: number; quote: string; }
+export interface ChecklistResult { id: number; violated: boolean; evidence: ChecklistEvidence[]; reason: string; }
 export interface Evaluation {
   scores: { attitude: ScoreDetail; resolution: ScoreDetail; flow: ScoreDetail };
   overallSummary: string;
   silenceComments: { atSec: number; note: string }[];
   transcript: TranscriptSegment[];
+  csChecklist?: ChecklistResult[]; // CS 영역 감점 체크리스트(구버전 저장분엔 없음 → optional)
   error: string | null;
 }
 export interface EvaluationResult {
