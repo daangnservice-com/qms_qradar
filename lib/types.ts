@@ -17,16 +17,34 @@ export interface EvaluationResult {
   silenceSummary: SilenceSummary;
   evaluation: Evaluation;
   conversationId?: string; // Genesys 대화 ID(샘플 평가 출처)
+  analysisId?: string; // 저장된 분석 결과 id(공유 URL 키)
 }
 
-// BigQuery 평가 테이블(qradar_evaluation_cases)에서 고른 평가 대상 샘플 1건.
+// 콜 분석 샘플 목록 필터. 배열은 다중선택(비면 미적용), 날짜는 YYYY-MM-DD, 통화시간은 분(minutes).
+export interface SampleFilters {
+  conversationIds?: string[]; // genesys_conversation_id
+  phoneInquiryIds?: string[]; // 상담이력 ID
+  adminUserIds?: string[]; // Admin ID (상담사 유저 ID)
+  adminNames?: string[]; // Admin Name (상담사 닉네임)
+  teams?: string[]; // operator_renewal_team_name (상담사 소속)
+  categories?: string[]; // 카테고리
+  callDateStart?: string | null; // 콜 날짜 call_start >= (YYYY-MM-DD)
+  callDateEnd?: string | null; // 콜 날짜 call_start <= (YYYY-MM-DD)
+  callLenMin?: number | null; // minutes_taken >= (분)
+  callLenMax?: number | null; // minutes_taken <= (분)
+}
+
+// BigQuery 평가 테이블(qradar_evaluation_cases)에서 고른 콜 분석 대상 샘플 1건.
 export interface EvaluationSample {
   conversationId: string; // Genesys conversation_id → 녹취 확보 키
   phoneInquiryId: string; // 상담이력 ID
+  adminName: string; // 상담사 닉네임(Admin Name)
+  team: string; // 상담사 소속(operator_renewal_team_name)
+  category: string; // 카테고리
+  callDate: string; // 콜 날짜(call_start 앞 10자, YYYY-MM-DD)
   contentSnippet: string; // 상담이력 미리보기(앞부분)
-  inquiryCreatedAt: string; // 문의 생성시간(inquiry_created_at_kst)
-  yearMonth: string; // 상담 연월
   callDurationSec: number | null; // 통화 길이(초). call_end-call_start 우선, minutes_taken 폴백
+  analyzed: boolean; // 저장된 분석 결과 존재 여부(완료 표시·세션 넘어 유지)
 }
 
 export type DamageVerdict = "파손됨" | "정상" | "불확실";

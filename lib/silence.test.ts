@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { parseInputDuration, parseSilenceEvents, summarizeSilences } from "./silence";
+import { parseInputDuration, parseSilenceEvents, summarizeSilences, computeSpeechGaps } from "./silence";
 
 const stderr = readFileSync(path.resolve(__dirname, "../test/fixtures/silencedetect.stderr.txt"), "utf8");
 
@@ -29,5 +29,22 @@ describe("summarizeSilences", () => {
     expect(summary.totalSec).toBeCloseTo(29.7, 5);
     expect(summary.longestSec).toBe(25.2);
     expect(summary.silenceRatio).toBeCloseTo(29.7 / 1234.56, 5);
+  });
+});
+
+describe("computeSpeechGaps", () => {
+  it("finds gaps between merged speech spans (both channels quiet)", () => {
+    // 채널 섞임: [0,5] 상담원, [3,8] 고객(겹침→합쳐서 [0,8]), 그 뒤 큰 공백, [70,75]
+    const spans = [
+      { atSec: 0, endSec: 5 },
+      { atSec: 3, endSec: 8 },
+      { atSec: 70, endSec: 75 },
+    ];
+    expect(computeSpeechGaps(spans)).toEqual([{ start: 8, end: 70, durationSec: 62 }]);
+  });
+
+  it("no gap when speech is continuous, [] for empty", () => {
+    expect(computeSpeechGaps([{ atSec: 0, endSec: 10 }, { atSec: 9, endSec: 20 }])).toEqual([]);
+    expect(computeSpeechGaps([])).toEqual([]);
   });
 });

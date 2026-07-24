@@ -8,8 +8,8 @@ import type { UsageStats } from "@/lib/bigquery";
 
 // 경로 → 화면 이름(표시용). 새 페이지가 생기면 여기에 추가.
 const PATH_LABELS: Record<string, string> = {
-  "/": "콜 품질 평가",
-  "/call-quality": "콜 품질 평가",
+  "/": "콜 분석",
+  "/call-quality": "콜 분석",
   "/damage": "파손 판별",
   "/feedback": "피드백",
   "/usage": "사용량",
@@ -19,7 +19,7 @@ const pathLabel = (p: string) => PATH_LABELS[p] ?? p;
 // 액션 이벤트 → 기능 이름(표시용).
 const ACTION_LABELS: Record<string, string> = {
   damage_detect: "파손 판별 실행",
-  call_evaluate: "콜 품질 평가 실행",
+  call_evaluate: "콜 분석 실행",
   chat_ask: "챗봇 질문",
   feedback_submit: "피드백 제출",
 };

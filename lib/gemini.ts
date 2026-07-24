@@ -1,12 +1,25 @@
 import { GoogleGenerativeAI, type Schema } from "@google/generative-ai";
 import { GoogleAIFileManager, FileState } from "@google/generative-ai/server";
 import { formatClock } from "./format";
-import type { Silence, SilenceSummary, Evaluation } from "./types";
+import type { Silence, SilenceSummary, ScoreDetail } from "./types";
+import type { SttSegment } from "./stt";
 
-export function buildEvaluationPrompt(silences: Silence[], summary: SilenceSummary): string {
+// Gemini 채점 결과(전사는 STT가 담당하므로 여기서 생성하지 않는다).
+export interface GeminiScoring {
+  scores: { attitude: ScoreDetail; resolution: ScoreDetail; flow: ScoreDetail };
+  overallSummary: string;
+  silenceComments: { atSec: number; note: string }[];
+  agentSpeakerTag: number | null; // STT 화자 태그 중 상담원에 해당하는 번호
+  error: string | null;
+}
+
+export function buildEvaluationPrompt(silences: Silence[], summary: SilenceSummary, stt: SttSegment[]): string {
   const lines = silences
     .map((s) => `- ${formatClock(s.startSec)}~${formatClock(s.endSec)} (${s.durationSec.toFixed(1)}초)`)
     .join("\n") || "- (기준 이상 공백 없음)";
+  const script = stt.length
+    ? stt.map((s) => `[화자 ${s.speakerTag} @${formatClock(s.atSec)}] ${s.text}`).join("\n")
+    : "(전사 없음 — 녹음을 직접 듣고 판단)";
   return [
     "당신은 고객 상담(CS) 콜 품질 평가자입니다. 첨부된 통화 녹음을 듣고 아래 3개 항목을 각각 1~5점(정수)으로 평가하세요.",
     "",
@@ -21,7 +34,10 @@ export function buildEvaluationPrompt(silences: Silence[], summary: SilenceSumma
     "",
     "위 공백 구간을 근거로 flow를 평가하고, 주요 공백에 대해 silenceComments에 코멘트를 남기세요.",
     "",
-    "또한 통화 전체를 전사(transcript)하세요. 각 발화를 화자('상담원' 또는 '고객')로 구분하고, 발화 시작 시각을 초 단위(atSec)로 표기하세요. 들리는 순서대로 빠짐없이 담으세요.",
+    "아래는 STT(음성인식)로 화자를 분리해 전사한 스크립트입니다(화자는 번호로만 구분됨):",
+    script,
+    "",
+    "이 스크립트에서 **상담원(고객센터 직원)에 해당하는 화자 번호**를 agentSpeakerTag로 알려주세요(판단 불가하면 null).",
     "반드시 지정된 JSON 스키마로만 응답하세요.",
   ].join("\n");
 }
@@ -43,25 +59,15 @@ const RESPONSE_SCHEMA = {
       type: "array",
       items: { type: "object", properties: { atSec: { type: "number" }, note: { type: "string" } }, required: ["atSec", "note"] },
     },
-    transcript: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          atSec: { type: "number" },
-          speaker: { type: "string" },
-          text: { type: "string" },
-        },
-        required: ["atSec", "speaker", "text"],
-      },
-    },
+    agentSpeakerTag: { type: "integer", nullable: true },
   },
-  required: ["scores", "overallSummary", "silenceComments", "transcript"],
+  required: ["scores", "overallSummary", "silenceComments"],
 } as const;
 
-export function parseEvaluation(jsonText: string): Evaluation {
+export function parseEvaluation(jsonText: string): GeminiScoring {
   const cleaned = jsonText.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const o = JSON.parse(cleaned);
+  const tag = o.agentSpeakerTag;
   return {
     scores: {
       attitude: { score: Number(o.scores.attitude.score), comment: String(o.scores.attitude.comment) },
@@ -72,18 +78,17 @@ export function parseEvaluation(jsonText: string): Evaluation {
     silenceComments: Array.isArray(o.silenceComments)
       ? o.silenceComments.map((c: { atSec: number; note: string }) => ({ atSec: Number(c.atSec), note: String(c.note) }))
       : [],
-    transcript: Array.isArray(o.transcript)
-      ? o.transcript.map((t: { atSec: number; speaker: string; text: string }) => ({
-          atSec: Number(t.atSec),
-          speaker: String(t.speaker),
-          text: String(t.text),
-        }))
-      : [],
+    agentSpeakerTag: tag == null || Number.isNaN(Number(tag)) ? null : Number(tag),
     error: null,
   };
 }
 
-export async function runGeminiEvaluation(filePath: string, silences: Silence[], summary: SilenceSummary): Promise<Evaluation> {
+export async function runGeminiEvaluation(
+  filePath: string,
+  silences: Silence[],
+  summary: SilenceSummary,
+  stt: SttSegment[],
+): Promise<GeminiScoring> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY 미설정");
   const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
@@ -116,7 +121,7 @@ export async function runGeminiEvaluation(filePath: string, silences: Silence[],
     });
     const result = await gm.generateContent([
       { fileData: { fileUri: file.uri, mimeType: file.mimeType } },
-      { text: buildEvaluationPrompt(silences, summary) },
+      { text: buildEvaluationPrompt(silences, summary, stt) },
     ]);
     return parseEvaluation(result.response.text());
   } finally {

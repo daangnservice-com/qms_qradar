@@ -41,6 +41,27 @@ export function summarizeSilences(
   return { silences, summary };
 }
 
+// STT 발화 구간(양 채널 병합)의 사이 = 아무도 말하지 않은 공백. 보류음/배경 노이즈가 있어도 잡힌다.
+// spans는 [atSec, endSec) 발화 구간(채널 섞여도 됨). 겹치는 구간을 합집합으로 병합한 뒤 그 사이를 공백으로.
+export function computeSpeechGaps(
+  spans: { atSec: number; endSec: number }[],
+): { start: number; end: number; durationSec: number }[] {
+  const valid = spans.filter((s) => s.endSec > s.atSec).sort((a, b) => a.atSec - b.atSec);
+  if (!valid.length) return [];
+  const gaps: { start: number; end: number; durationSec: number }[] = [];
+  let coverEnd = valid[0].endSec;
+  for (let i = 1; i < valid.length; i++) {
+    const s = valid[i];
+    if (s.atSec > coverEnd) {
+      gaps.push({ start: coverEnd, end: s.atSec, durationSec: s.atSec - coverEnd });
+      coverEnd = s.endSec;
+    } else if (s.endSec > coverEnd) {
+      coverEnd = s.endSec;
+    }
+  }
+  return gaps;
+}
+
 export async function runSilenceDetection(
   filePath: string,
   opts: { minSilenceSec: number; noiseDb: number },

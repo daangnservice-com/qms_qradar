@@ -1,17 +1,53 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Sparkles, Loader2, AlertCircle, RefreshCw, Phone, Clock, CheckCircle2, Eye } from "lucide-react";
-import type { EvaluationResult, EvaluationSample } from "@/lib/types";
+import { useEffect, useRef, useState } from "react";
+import { Sparkles, Loader2, AlertCircle, RefreshCw, Phone, Clock, CheckCircle2, Eye, Calendar } from "lucide-react";
+import type { EvaluationResult, EvaluationSample, SampleFilters } from "@/lib/types";
+import type { CallQualityOrg } from "@/lib/callQualityOrg";
 import { describeApiError } from "@/lib/apiError";
 import { formatClock } from "@/lib/format";
 import ThresholdSlider from "./ThresholdSlider";
+import FilterPanel from "./FilterPanel";
+
+// 필터를 URL(?f=...)에 실어 새로고침·공유 시에도 유지한다.
+function filtersActive(f: SampleFilters): boolean {
+  return Boolean(
+    f.callDateStart ||
+      f.callDateEnd ||
+      f.callLenMin != null ||
+      f.callLenMax != null ||
+      f.conversationIds?.length ||
+      f.phoneInquiryIds?.length ||
+      f.adminUserIds?.length ||
+      f.teams?.length ||
+      f.categories?.length ||
+      f.adminNames?.length,
+  );
+}
+function readFiltersFromUrl(): SampleFilters {
+  if (typeof window === "undefined") return {};
+  try {
+    const f = new URLSearchParams(window.location.search).get("f");
+    return f ? (JSON.parse(f) as SampleFilters) : {};
+  } catch {
+    return {};
+  }
+}
+function writeFiltersToUrl(f: SampleFilters) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (filtersActive(f)) url.searchParams.set("f", JSON.stringify(f));
+  else url.searchParams.delete("f");
+  window.history.replaceState(null, "", url.toString());
+}
 
 export default function SampleList({
+  org,
   onResult,
   evaluatedIds,
   onView,
 }: {
+  org: CallQualityOrg;
   onResult: (r: EvaluationResult) => void;
   evaluatedIds: Set<string>;
   onView: (conversationId: string) => void;
@@ -23,12 +59,20 @@ export default function SampleList({
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null);
   const [evalError, setEvalError] = useState<string | null>(null);
   const [showDone, setShowDone] = useState(false);
+  // 초기값은 SSR-안전(빈 필터). URL 복원은 마운트 후 useEffect에서(하이드레이션 불일치 방지).
+  const [appliedFilters, setAppliedFilters] = useState<SampleFilters>({});
+  const [restored, setRestored] = useState(false);
+  const restoredInitial = useRef<SampleFilters>({});
 
-  async function loadSamples() {
+  async function loadSamples(filters: SampleFilters = appliedFilters) {
     setLoadingList(true);
     setListError(null);
     try {
-      const res = await fetch("/api/call-quality/samples");
+      const res = await fetch("/api/call-quality/samples", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filters, org }),
+      });
       if (!res.ok) throw new Error(await describeApiError(res));
       const data = (await res.json()) as { samples: EvaluationSample[] };
       setSamples(data.samples ?? []);
@@ -40,25 +84,37 @@ export default function SampleList({
   }
 
   useEffect(() => {
-    loadSamples();
+    const urlFilters = readFiltersFromUrl(); // 클라이언트에서만 URL 읽기
+    restoredInitial.current = urlFilters;
+    setAppliedFilters(urlFilters);
+    setRestored(true);
+    loadSamples(urlFilters);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function evaluate(conversationId: string) {
+  function applyFilters(f: SampleFilters) {
+    setAppliedFilters(f);
+    writeFiltersToUrl(f);
+    loadSamples(f);
+  }
+
+  async function evaluate(sample: EvaluationSample) {
     if (evaluatingId) return;
+    const conversationId = sample.conversationId;
     setEvaluatingId(conversationId);
     setEvalError(null);
     try {
       const res = await fetch("/api/evaluate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversationId, minSilenceSec }),
+        body: JSON.stringify({ conversationId, phoneInquiryId: sample.phoneInquiryId, minSilenceSec, org }),
       });
       if (!res.ok) throw new Error(await describeApiError(res));
       onResult((await res.json()) as EvaluationResult);
       setShowDone(true);
       window.setTimeout(() => setShowDone(false), 2800);
     } catch (e) {
-      setEvalError(e instanceof Error ? e.message : "평가에 실패했어요");
+      setEvalError(e instanceof Error ? e.message : "분석에 실패했어요");
     } finally {
       setEvaluatingId(null);
     }
@@ -68,13 +124,21 @@ export default function SampleList({
     <div className="space-y-4">
       <ThresholdSlider value={minSilenceSec} onChange={setMinSilenceSec} disabled={!!evaluatingId} />
 
+      {/* 복원 시 한 번만 remount해 초기값 반영(첫 렌더는 서버와 동일한 빈 필터). */}
+      <FilterPanel
+        key={restored ? "restored" : "initial"}
+        initial={restored ? restoredInitial.current : {}}
+        onApply={applyFilters}
+        disabled={loadingList || !!evaluatingId}
+      />
+
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-500">
-          평가 샘플 {samples.length > 0 && <b className="text-navy">{samples.length}건</b>}
+          분석 샘플 {samples.length > 0 && <b className="text-navy">{samples.length}건</b>}
         </p>
         <button
           type="button"
-          onClick={loadSamples}
+          onClick={() => loadSamples()}
           disabled={loadingList || !!evaluatingId}
           className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-gray-500 transition hover:bg-gray-100 hover:text-gray-800 disabled:opacity-50"
         >
@@ -102,66 +166,89 @@ export default function SampleList({
         </div>
       ) : samples.length === 0 ? (
         <div className="rounded-2xl border border-gray-200 bg-white py-16 text-center text-sm text-gray-400">
-          평가할 샘플이 없어요.
+          분석할 샘플이 없어요.
         </div>
       ) : (
         <ul className="divide-y divide-gray-100 overflow-hidden rounded-2xl border border-gray-200 bg-white">
           {samples.map((s) => {
             const busy = evaluatingId === s.conversationId;
-            const done = evaluatedIds.has(s.conversationId);
+            const done = s.analyzed || evaluatedIds.has(s.conversationId);
             return (
               <li key={s.conversationId} className="flex items-center gap-4 px-4 py-3">
                 <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2 text-sm">
-                    <span className="font-semibold text-gray-900">{s.phoneInquiryId || "(ID 없음)"}</span>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                    <span className="font-semibold text-gray-900">{s.adminName || "(상담사 미상)"}</span>
+                    {s.team && (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">{s.team}</span>
+                    )}
                     {done && (
                       <span className="inline-flex items-center gap-1 rounded bg-green-50 px-1.5 py-0.5 text-[11px] font-medium text-green-700">
                         <CheckCircle2 className="h-3 w-3" />
                         완료
                       </span>
                     )}
-                    {(s.inquiryCreatedAt || s.yearMonth) && (
-                      <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-500">
-                        {s.inquiryCreatedAt || s.yearMonth}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-gray-500">
+                    {s.callDate && (
+                      <span className="inline-flex items-center gap-1">
+                        <Calendar className="h-3 w-3 text-gray-400" />
+                        {s.callDate}
                       </span>
                     )}
                     {s.callDurationSec != null && (
-                      <span className="inline-flex items-center gap-1 rounded bg-navy/10 px-1.5 py-0.5 text-[11px] font-medium text-navy">
+                      <span className="inline-flex items-center gap-1 text-navy">
                         <Clock className="h-3 w-3" />
                         {formatClock(s.callDurationSec)}
                       </span>
                     )}
+                    {s.category && (
+                      <span className="rounded bg-gray-100 px-1.5 py-0.5 font-medium text-gray-600">{s.category}</span>
+                    )}
                   </div>
-                  <p className="mt-0.5 truncate font-mono text-[11px] text-gray-400">{s.conversationId}</p>
                   {s.contentSnippet && <p className="mt-1 line-clamp-2 text-xs text-gray-500">{s.contentSnippet}</p>}
+                  <p className="mt-1 truncate font-mono text-[10px] text-gray-400">
+                    상담이력 {s.phoneInquiryId || "—"} · {s.conversationId}
+                  </p>
                 </div>
-                {done && !busy ? (
+                {busy ? (
                   <button
                     type="button"
-                    onClick={() => onView(s.conversationId)}
-                    className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-navy px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-navy-hover"
+                    disabled
+                    className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-white opacity-80"
                   >
-                    <Eye className="h-3.5 w-3.5" />
-                    결과 보기
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    분석 중…
                   </button>
+                ) : done ? (
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => onView(s.conversationId)}
+                      className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-navy px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-navy-hover"
+                    >
+                      <Eye className="h-3.5 w-3.5" />
+                      결과 보기
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => evaluate(s)}
+                      disabled={!!evaluatingId}
+                      title="다시 분석 (최신 결과로 갱신)"
+                      className="inline-flex items-center justify-center gap-1 rounded-lg border border-gray-200 px-2.5 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      재분석
+                    </button>
+                  </div>
                 ) : (
                   <button
                     type="button"
-                    onClick={() => evaluate(s.conversationId)}
+                    onClick={() => evaluate(s)}
                     disabled={!!evaluatingId}
                     className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:brightness-95 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {busy ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        평가 중…
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-3.5 w-3.5" />
-                        평가
-                      </>
-                    )}
+                    <Sparkles className="h-3.5 w-3.5" />
+                    분석
                   </button>
                 )}
               </li>
@@ -173,14 +260,14 @@ export default function SampleList({
       {evaluatingId && (
         <p className="flex items-center justify-center gap-1.5 text-xs text-gray-400">
           <Phone className="h-3.5 w-3.5" />
-          Genesys에서 녹취를 받아 평가 중이에요 (통화 길이에 따라 수십 초~수 분)
+          Genesys에서 녹취를 받아 분석 중이에요 (통화 길이에 따라 수십 초~수 분)
         </p>
       )}
 
       {showDone && (
         <div className="fixed bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-xl border border-green-200 bg-white px-4 py-3 text-sm font-semibold text-green-700 shadow-lg">
           <CheckCircle2 className="h-4 w-4" />
-          평가 완료 — 오른쪽에서 결과를 확인하세요
+          분석 완료 — 오른쪽에서 결과를 확인하세요
         </div>
       )}
     </div>

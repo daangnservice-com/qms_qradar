@@ -5,6 +5,7 @@ vi.mock("@/lib/auth", () => ({ authOptions: {} }));
 vi.mock("@/lib/genesys", () => ({ getConversationAudioUrl: vi.fn(), downloadAudio: vi.fn() }));
 vi.mock("@/lib/evaluate", () => ({ evaluateFile: vi.fn() }));
 vi.mock("@/lib/audio", () => ({ saveTempFile: vi.fn(), cleanupTempFile: vi.fn(), transcodeToWav: vi.fn() }));
+vi.mock("@/lib/analysisStore", () => ({ saveAnalysisResult: vi.fn().mockResolvedValue("aid-1") }));
 vi.mock("@/lib/serverTrack", () => ({ trackServerAction: vi.fn() }));
 
 import { getServerSession } from "next-auth";
@@ -68,7 +69,7 @@ describe("POST /api/evaluate", () => {
     expect(json.durationSec).toBe(10);
     expect(json.conversationId).toBe("conv-1");
     expect(getConversationAudioUrl).toHaveBeenCalledWith("conv-1");
-    expect(evaluateFile).toHaveBeenCalledWith("/tmp/x.wav", { minSilenceSec: 4, noiseDb: -30 });
+    expect(evaluateFile).toHaveBeenCalledWith("/tmp/x.wav", { minSilenceSec: 4, noiseDb: -30 }, "/tmp/x.audio");
     // 임시파일 2개(src, wav) 정리
     expect((cleanupTempFile as any).mock.calls.map((c: any[]) => c[0])).toEqual(["/tmp/x.audio", "/tmp/x.wav"]);
   });

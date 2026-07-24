@@ -1,15 +1,28 @@
 import type { EvaluationResult } from "@/lib/types";
+import { maskPII } from "@/lib/pii";
 import ScoreCard from "./ScoreCard";
 import ReportView from "./ReportView";
 import SilenceTimeline from "./SilenceTimeline";
 import Transcript from "./Transcript";
 
-export default function ResultView({ result }: { result: EvaluationResult }) {
-  const { evaluation: e } = result;
+export default function ResultView({ result, org }: { result: EvaluationResult; org?: string }) {
+  // 표시 경계에서 PII 마스킹(멱등). 신규 저장분은 이미 마스킹됨, 기존 원본 저장분은 여기서 가려짐.
+  // Transcript는 자체적으로 세그먼트를 마스킹하므로 여기선 채점 텍스트만 처리.
+  const ev = result.evaluation;
+  const e = {
+    ...ev,
+    scores: {
+      attitude: { ...ev.scores.attitude, comment: maskPII(ev.scores.attitude.comment) },
+      resolution: { ...ev.scores.resolution, comment: maskPII(ev.scores.resolution.comment) },
+      flow: { ...ev.scores.flow, comment: maskPII(ev.scores.flow.comment) },
+    },
+    overallSummary: maskPII(ev.overallSummary),
+    silenceComments: ev.silenceComments.map((c) => ({ ...c, note: maskPII(c.note) })),
+  };
   return (
     <section className="mt-8 space-y-4">
       <div className="flex items-center gap-2">
-        <h2 className="text-sm font-bold tracking-tight text-gray-900">평가 결과</h2>
+        <h2 className="text-sm font-bold tracking-tight text-gray-900">분석 결과</h2>
         <span className="h-px flex-1 bg-gray-100" />
       </div>
 
@@ -25,7 +38,7 @@ export default function ResultView({ result }: { result: EvaluationResult }) {
         summary={result.silenceSummary}
         comments={e.silenceComments}
       />
-      <Transcript segments={e.transcript} />
+      <Transcript segments={e.transcript} conversationId={result.conversationId} org={org} />
     </section>
   );
 }

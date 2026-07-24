@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@google-cloud/bigquery": "^8.3.1",
+    "@google-cloud/speech": "^7.5.0",
     "@google-cloud/storage": "^7.21.0",
     "@google/generative-ai": "^0.24.1",
     "@vercel/analytics": "^2.0.1",
