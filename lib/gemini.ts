@@ -140,15 +140,17 @@ export async function runGeminiEvaluation(
   // 업로드 전 wav로 정규화된 파일(lib/audio.transcodeToWav)을 받는다.
   const uploaded = await fileManager.uploadFile(filePath, { mimeType: "audio/wav", displayName: "call.wav" });
 
-  // 파일이 ACTIVE 될 때까지 대기 (최대 120초 / 60회 시도)
-  const MAX_POLL_ATTEMPTS = 60;
+  // 파일이 ACTIVE 될 때까지 대기 (최대 300초 / 150회 시도).
+  // 120초였을 땐 40분급 통화(mono wav ~77MB)가 여기서 걸릴 수 있었다. 정상 파일은 금방
+  // ACTIVE라 상한을 올려도 평소 대기 시간은 늘지 않는다.
+  const MAX_POLL_ATTEMPTS = 150;
   const POLL_INTERVAL_MS = 2000;
   let file = await fileManager.getFile(uploaded.file.name);
   let attempts = 0;
   while (file.state === FileState.PROCESSING) {
     if (attempts >= MAX_POLL_ATTEMPTS)
       throw new Error(
-        "Gemini 오디오 처리 시간 초과 — 업로드한 파일이 약 120초 안에 처리 준비되지 않았어요. 파일이 너무 길거나 네트워크가 느릴 수 있어요. 더 짧은 파일로 시도해 주세요.",
+        "Gemini 오디오 처리 시간 초과 — 업로드한 파일이 약 300초 안에 처리 준비되지 않았어요. 파일이 너무 길거나 네트워크가 느릴 수 있어요.",
       );
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     file = await fileManager.getFile(uploaded.file.name);
