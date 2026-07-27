@@ -60,7 +60,8 @@ export default function Transcript({
       </button>
 
       {audioSrc && (
-        <div className="border-t border-gray-100 px-5 py-3">
+        // 스크립트를 길게 펼쳐도 플레이어는 상단에 고정(bg-white로 아래 세그먼트가 비쳐 보이지 않게).
+        <div className="sticky top-0 z-10 border-t border-gray-100 bg-white px-5 py-3">
           {/* preload=none: 실제 재생/이동 전까지 Genesys에서 받아오지 않음. controlsList=nodownload: 다운로드 버튼 숨김(임시 재생만) */}
           <audio
             ref={audioRef}
@@ -76,7 +77,8 @@ export default function Transcript({
       )}
 
       {open && (
-        <div className="max-h-96 space-y-3 overflow-y-auto border-t border-gray-100 px-5 py-4">
+        // 내부 스크롤(max-h + overflow) 없이 전부 펼친다. 스크롤은 바깥(패널/페이지)에서 한 번만.
+        <div className="space-y-3 border-t border-gray-100 px-5 py-4">
           {segments.map((s, i) => {
             const isAgent = s.speaker.includes("상담");
             return (
