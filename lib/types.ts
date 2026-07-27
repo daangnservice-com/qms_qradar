@@ -24,6 +24,15 @@ export interface EvaluationResult {
   analysisId?: string; // 저장된 분석 결과 id(공유 URL 키)
 }
 
+// /api/evaluate NDJSON 스트림 이벤트. 분석이 길어도(10분+ 통화) 앞단 LB가 연결을 끊지 않도록
+// 처리 중 진행/하트비트를 계속 흘려보내고, 마지막에 result 또는 error로 끝난다.
+export type EvaluateStep = "genesys" | "download" | "transcode" | "analyze" | "save";
+export type EvaluateEvent =
+  | { type: "progress"; step: EvaluateStep; elapsedMs: number }
+  | { type: "heartbeat"; elapsedMs: number }
+  | { type: "result"; result: EvaluationResult }
+  | { type: "error"; message: string };
+
 // 콜 분석 샘플 목록 필터. 배열은 다중선택(비면 미적용), 날짜는 YYYY-MM-DD, 통화시간은 분(minutes).
 export interface SampleFilters {
   conversationIds?: string[]; // genesys_conversation_id

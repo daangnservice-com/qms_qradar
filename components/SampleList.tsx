@@ -2,12 +2,22 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Sparkles, Loader2, AlertCircle, RefreshCw, Phone, Clock, CheckCircle2, Eye, Calendar } from "lucide-react";
-import type { EvaluationResult, EvaluationSample, SampleFilters } from "@/lib/types";
+import type { EvaluateEvent, EvaluateStep, EvaluationResult, EvaluationSample, SampleFilters } from "@/lib/types";
 import type { CallQualityOrg } from "@/lib/callQualityOrg";
 import { describeApiError } from "@/lib/apiError";
+import { readNdjson } from "@/lib/ndjson";
 import { formatClock } from "@/lib/format";
 import ThresholdSlider from "./ThresholdSlider";
 import FilterPanel from "./FilterPanel";
+
+// 분석 진행 단계 표시(서버가 흘려보내는 progress 이벤트 기준).
+const STEP_LABEL: Record<EvaluateStep, string> = {
+  genesys: "Genesys에서 녹취 확보 중",
+  download: "녹취 내려받는 중",
+  transcode: "오디오 변환 중",
+  analyze: "전사·채점 중 (가장 오래 걸려요)",
+  save: "결과 저장 중",
+};
 
 // 필터를 URL(?f=...)에 실어 새로고침·공유 시에도 유지한다.
 function filtersActive(f: SampleFilters): boolean {
@@ -58,6 +68,7 @@ export default function SampleList({
   const [minSilenceSec, setMinSilenceSec] = useState(3);
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null);
   const [evalError, setEvalError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ label: string; sec: number } | null>(null);
   const [showDone, setShowDone] = useState(false);
   // 초기값은 SSR-안전(빈 필터). URL 복원은 마운트 후 useEffect에서(하이드레이션 불일치 방지).
   const [appliedFilters, setAppliedFilters] = useState<SampleFilters>({});
@@ -103,20 +114,36 @@ export default function SampleList({
     const conversationId = sample.conversationId;
     setEvaluatingId(conversationId);
     setEvalError(null);
+    setProgress(null);
     try {
       const res = await fetch("/api/evaluate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId, phoneInquiryId: sample.phoneInquiryId, minSilenceSec, org }),
       });
+      // 권한·입력 오류만 상태코드로 온다. 처리 중 실패는 스트림 안의 error 이벤트로 온다
+      // (스트림은 200을 먼저 보내서 상태코드에 실패를 실을 수 없다).
       if (!res.ok) throw new Error(await describeApiError(res));
-      onResult((await res.json()) as EvaluationResult);
+
+      let result: EvaluationResult | null = null;
+      for await (const ev of readNdjson<EvaluateEvent>(res.body)) {
+        if (ev.type === "progress")
+          setProgress({ label: STEP_LABEL[ev.step] ?? "분석 중", sec: Math.round(ev.elapsedMs / 1000) });
+        else if (ev.type === "heartbeat")
+          setProgress((p) => (p ? { ...p, sec: Math.round(ev.elapsedMs / 1000) } : p));
+        else if (ev.type === "error") throw new Error(ev.message);
+        else if (ev.type === "result") result = ev.result;
+      }
+      // result 없이 스트림이 끝났다 = 연결이 중간에 끊김. 서버 처리는 끝났을 수 있어 결과 보기를 안내.
+      if (!result) throw new Error("연결이 끊겨 결과를 받지 못했어요.\n잠시 후 새로고침하면 저장된 결과가 보일 수 있어요.");
+      onResult(result);
       setShowDone(true);
       window.setTimeout(() => setShowDone(false), 2800);
     } catch (e) {
       setEvalError(e instanceof Error ? e.message : "분석에 실패했어요");
     } finally {
       setEvaluatingId(null);
+      setProgress(null);
     }
   }
 
@@ -260,7 +287,13 @@ export default function SampleList({
       {evaluatingId && (
         <p className="flex items-center justify-center gap-1.5 text-xs text-gray-400">
           <Phone className="h-3.5 w-3.5" />
-          Genesys에서 녹취를 받아 분석 중이에요 (통화 길이에 따라 수십 초~수 분)
+          {progress ? (
+            <>
+              {progress.label}… <span className="tabular-nums text-gray-500">{progress.sec}초 경과</span>
+            </>
+          ) : (
+            "Genesys에서 녹취를 받아 분석 중이에요 (통화 길이에 따라 수십 초~수 분)"
+          )}
         </p>
       )}
 
