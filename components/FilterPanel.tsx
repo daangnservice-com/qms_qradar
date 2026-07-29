@@ -111,13 +111,18 @@ export default function FilterPanel({
   const [open, setOpen] = useState(false);
   const [raw, setRaw] = useState<Raw>(() => fromFilters(initial));
   const [options, setOptions] = useState<Options>({ teamAgents: [], categories: [] });
+  const [optionsError, setOptionsError] = useState(false);
   const active = countActive(raw);
 
+  // 옵션 로딩이 실패하면 드롭다운이 "값이 없어요"로만 보여 원인을 알 수 없다 → 별도로 알린다.
   useEffect(() => {
     fetch("/api/call-quality/filter-options")
-      .then((r) => (r.ok ? (r.json() as Promise<Options>) : null))
-      .then((d) => d && setOptions(d))
-      .catch(() => {});
+      .then((r) => (r.ok ? (r.json() as Promise<Options>) : Promise.reject(new Error(String(r.status)))))
+      .then((d) => {
+        setOptions(d);
+        setOptionsError(false);
+      })
+      .catch(() => setOptionsError(true));
   }, []);
 
   const teamOptions = useMemo(
@@ -178,6 +183,11 @@ export default function FilterPanel({
 
       {open && (
         <div className="space-y-3 border-t border-gray-100 px-4 py-4">
+          {optionsError && (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              팀·상담사·카테고리 목록을 불러오지 못했어요. 새로고침해도 그대로면 관리자에게 알려주세요. (ID 입력·날짜 필터는 그대로 쓸 수 있어요)
+            </p>
+          )}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="콜 날짜">{callDateRange}</Field>
             <Field label="통화 시간(분)">
