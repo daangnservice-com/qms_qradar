@@ -13,6 +13,12 @@ const LOCATION = process.env.GROWTH_CULTURE_LOCATION; // 미설정이면 auto-de
 const SNIPPET_MAX = 200;
 const CID = "json_value(case_content, '$.genesys_conversation_id')";
 
+// call_start는 UTC다(원문 예: 2026-07-24T01:29:07.706467Z).
+// 앞 10자를 그대로 날짜로 쓰면 KST 09시 이전 통화가 전날로 밀리므로, Asia/Seoul 기준 날짜로 변환한다.
+// safe_cast: 포맷이 어긋난 행은 에러 대신 null(그 행은 날짜 필터에서 제외).
+const CALL_START_TS = "safe_cast(json_value(case_content, '$.call_start') as timestamp)";
+const CALL_DATE_KST = `format_date('%F', date(${CALL_START_TS}, 'Asia/Seoul'))`;
+
 // 통화 길이(초). call_end-call_start를 우선 쓰고, 안 되면 minutes_taken(분)으로 폴백.
 function callDurationSec(callStart: unknown, callEnd: unknown, minutesTaken: unknown): number | null {
   const s = Date.parse(String(callStart ?? ""));
@@ -72,14 +78,13 @@ export async function listEvaluationSamples(filters: SampleFilters = {}, limit =
   addIn(cleanArr(filters.teams), "json_value(case_content, '$.operator_renewal_team_name')", "teams");
   addIn(cleanArr(filters.categories), "json_value(case_content, '$.카테고리')", "categories");
 
-  // 콜 날짜(call_start 앞 10자 = YYYY-MM-DD 문자열 비교, 포맷 관대)
-  const callDateExpr = "substr(json_value(case_content, '$.call_start'), 1, 10)";
+  // 콜 날짜(KST 기준 YYYY-MM-DD 문자열 비교). 사용자가 고른 날짜는 당연히 KST 기준이다.
   if (filters.callDateStart) {
-    where.push(`${callDateExpr} >= @callDateStart`);
+    where.push(`${CALL_DATE_KST} >= @callDateStart`);
     params.callDateStart = filters.callDateStart;
   }
   if (filters.callDateEnd) {
-    where.push(`${callDateExpr} <= @callDateEnd`);
+    where.push(`${CALL_DATE_KST} <= @callDateEnd`);
     params.callDateEnd = filters.callDateEnd;
   }
   const minutesExpr = "safe_cast(json_value(case_content, '$.minutes_taken') as float64)";
@@ -102,6 +107,7 @@ export async function listEvaluationSamples(filters: SampleFilters = {}, limit =
       json_value(case_content, '$.operator_renewal_team_name') as team,
       json_value(case_content, '$.카테고리')                as category,
       json_value(case_content, '$.call_start')              as call_start,
+      ${CALL_DATE_KST}                                      as call_date_kst,
       json_value(case_content, '$.call_end')                as call_end,
       json_value(case_content, '$.minutes_taken')           as minutes_taken,
       json_value(case_content, '$.상담이력')                as phone_inquiry_content
@@ -126,7 +132,8 @@ export async function listEvaluationSamples(filters: SampleFilters = {}, limit =
     adminName: r.admin_name ? String(r.admin_name) : "",
     team: r.team ? String(r.team) : "",
     category: r.category ? String(r.category) : "",
-    callDate: r.call_start ? String(r.call_start).slice(0, 10) : "",
+    // 표시도 KST 기준. UTC 앞 10자를 쓰면 필터 결과와 화면 날짜가 어긋난다.
+    callDate: r.call_date_kst ? String(r.call_date_kst) : "",
     contentSnippet: r.phone_inquiry_content ? String(r.phone_inquiry_content).slice(0, SNIPPET_MAX) : "",
     callDurationSec: callDurationSec(r.call_start, r.call_end, r.minutes_taken),
     analyzed: false, // 라우트에서 저장 결과 조회 후 채운다

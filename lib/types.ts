@@ -41,8 +41,8 @@ export interface SampleFilters {
   adminNames?: string[]; // Admin Name (상담사 닉네임)
   teams?: string[]; // operator_renewal_team_name (상담사 소속)
   categories?: string[]; // 카테고리
-  callDateStart?: string | null; // 콜 날짜 call_start >= (YYYY-MM-DD)
-  callDateEnd?: string | null; // 콜 날짜 call_start <= (YYYY-MM-DD)
+  callDateStart?: string | null; // 콜 날짜(KST) >= (YYYY-MM-DD)
+  callDateEnd?: string | null; // 콜 날짜(KST) <= (YYYY-MM-DD)
   callLenMin?: number | null; // minutes_taken >= (분)
   callLenMax?: number | null; // minutes_taken <= (분)
 }
@@ -54,7 +54,7 @@ export interface EvaluationSample {
   adminName: string; // 상담사 닉네임(Admin Name)
   team: string; // 상담사 소속(operator_renewal_team_name)
   category: string; // 카테고리
-  callDate: string; // 콜 날짜(call_start 앞 10자, YYYY-MM-DD)
+  callDate: string; // 콜 날짜(call_start를 KST로 변환, YYYY-MM-DD)
   contentSnippet: string; // 상담이력 미리보기(앞부분)
   callDurationSec: number | null; // 통화 길이(초). call_end-call_start 우선, minutes_taken 폴백
   analyzed: boolean; // 저장된 분석 결과 존재 여부(완료 표시·세션 넘어 유지)
