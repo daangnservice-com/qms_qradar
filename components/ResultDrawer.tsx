@@ -6,7 +6,7 @@ import { X, ClipboardCheck, ExternalLink, Loader2 } from "lucide-react";
 import type { EvaluationResult } from "@/lib/types";
 import ResultView from "./ResultView";
 
-// 분석 결과를 오른쪽에서 슬라이드로 여는 패널. 목록은 그대로 두고 결과만 옆 창에서 확인.
+/** 분석 결과 우측 슬라이드 패널 — AI 비교·개선 케이스 상세와 동일 톤 */
 export default function ResultDrawer({
   open,
   result,
@@ -20,7 +20,6 @@ export default function ResultDrawer({
   org?: string;
   onClose: () => void;
 }) {
-  // ESC로 닫기
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -39,25 +38,27 @@ export default function ResultDrawer({
       />
       <aside
         role="dialog"
-        aria-label="분석 결과"
+        aria-label="케이스 상세"
         aria-hidden={!open}
-        className={`fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-gray-200 bg-white shadow-2xl transition-transform duration-300 ${
+        className={`fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-[var(--border-subtle)] bg-[var(--bg-canvas)] shadow-2xl transition-transform duration-300 ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-gray-100 px-5">
-          <h2 className="flex items-center gap-2 text-sm font-bold tracking-tight text-gray-900">
-            <ClipboardCheck className="h-4 w-4 text-green-600" />
-            분석 결과
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border-subtle)] px-4">
+          <div className="min-w-0">
+            <h2 className="flex items-center gap-2 text-[13px] font-bold tracking-tight text-[var(--fg-primary)]">
+              <ClipboardCheck className="h-4 w-4 text-[var(--accent)]" />
+              케이스 상세
+            </h2>
             {result?.conversationId && (
-              <span className="truncate font-mono text-[11px] font-normal text-gray-400">{result.conversationId}</span>
+              <p className="truncate font-mono text-[11px] text-[var(--fg-tertiary)]">{result.conversationId}</p>
             )}
-          </h2>
+          </div>
           <div className="flex items-center gap-1">
             {result?.analysisId && (
               <Link
                 href={`/call-quality/result/${result.analysisId}`}
-                className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium text-gray-500 transition hover:bg-gray-100 hover:text-gray-800"
+                className="inline-flex items-center gap-1 rounded-[var(--radius-md)] px-2 py-1.5 text-xs font-medium text-[var(--fg-tertiary)] transition hover:bg-[var(--bg-muted)] hover:text-[var(--fg-primary)]"
               >
                 <ExternalLink className="h-3.5 w-3.5" />
                 전체 화면
@@ -67,21 +68,23 @@ export default function ResultDrawer({
               type="button"
               onClick={onClose}
               aria-label="닫기"
-              className="rounded-md p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-navy"
+              className="rounded-[var(--radius-md)] p-1.5 text-[var(--fg-tertiary)] transition hover:bg-[var(--bg-muted)] hover:text-[var(--fg-primary)]"
             >
               <X className="h-[18px] w-[18px]" />
             </button>
           </div>
         </header>
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-10">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-10 pt-3">
           {result ? (
-            <ResultView result={result} org={org} />
+            <ResultView result={result} org={org} compactHeader />
           ) : loading ? (
-            <div className="flex items-center justify-center gap-2 py-20 text-sm text-gray-400">
+            <div className="flex items-center justify-center gap-2 py-20 text-sm text-[var(--fg-tertiary)]">
               <Loader2 className="h-4 w-4 animate-spin" />
               결과 불러오는 중…
             </div>
-          ) : null}
+          ) : (
+            <p className="py-16 text-center text-[13px] text-[var(--fg-tertiary)]">결과가 없어요</p>
+          )}
         </div>
       </aside>
     </>

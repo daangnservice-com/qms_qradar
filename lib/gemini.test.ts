@@ -22,6 +22,33 @@ describe("buildEvaluationPrompt", () => {
     expect(p).toContain("25.2");
     expect(p).toContain("agentSpeakerTag"); // 상담원 화자 판별 지시
     expect(p).toContain("환불하고 싶어요"); // STT 스크립트 포함
+    expect(p).toContain("말 겹침"); // overlaps 변수 기본 주입
+  });
+
+  it("includes formatted overlaps when provided", () => {
+    const p = buildEvaluationPrompt(silences, summary, stt, false, undefined, null, null, [
+      { startSec: 12.5, endSec: 14, durationSec: 1.5 },
+    ]);
+    expect(p).toContain("00:13");
+    expect(p).toContain("1.5초");
+  });
+
+  it("omits STT/overlaps blocks when inject vars exclude them", () => {
+    const cfg = {
+      steps: [
+        {
+          id: "inject_prompt_vars" as const,
+          enabled: true,
+          vars: ["silences" as const, "silence_summary" as const],
+        },
+      ],
+    };
+    const p = buildEvaluationPrompt(silences, summary, stt, false, undefined, null, cfg, [
+      { startSec: 1, endSec: 2, durationSec: 1 },
+    ]);
+    expect(p).toContain("02:15");
+    expect(p).not.toContain("환불하고 싶어요");
+    expect(p).not.toContain("말 겹침");
   });
 
   it("omits CS checklist by default, includes it only when checklist=true (growth)", () => {
@@ -74,5 +101,48 @@ describe("parseEvaluation", () => {
     expect(ev.csChecklist).toHaveLength(2);
     expect(ev.csChecklist[0]).toEqual({ id: 407, violated: true, evidence: [{ atSec: 1.2, quote: "네 말씀하세요" }], reason: "첫인사 없음" });
     expect(ev.csChecklist[1].violated).toBe(false);
+  });
+
+  it("parses custom score keys and object overallSummary", () => {
+    const ev = parseEvaluation(
+      JSON.stringify({
+        scores: { empathy: { score: 4, comment: "공감" }, clarity: { score: 5, comment: "명확" } },
+        overallSummary: { strengths: "친절", improvements: "속도" },
+        silenceComments: [],
+      }),
+    );
+    expect(ev.scores.empathy.score).toBe(4);
+    expect(ev.scores.clarity.comment).toBe("명확");
+    expect(ev.scores.attitude).toBeUndefined();
+    expect(ev.overallSummary).toEqual({ strengths: "친절", improvements: "속도" });
+  });
+
+  it("does not throw when scores are missing", () => {
+    const ev = parseEvaluation(JSON.stringify({ overallSummary: "총평만", silenceComments: [] }));
+    expect(ev.scores).toEqual({});
+    expect(ev.overallSummary).toBe("총평만");
+    expect(ev.error).toBeNull();
+  });
+
+  it("parses metrics bool/percent with expected types", () => {
+    const ev = parseEvaluation(
+      JSON.stringify({
+        scores: {},
+        metrics: {
+          agitated: { value: true, comment: "고성" },
+          agentSpeakRatio: { value: 72.5, comment: "" },
+        },
+        overallSummary: "s",
+        silenceComments: [],
+      }),
+      { agitated: "bool", agentSpeakRatio: "percent" },
+    );
+    expect(ev.metrics.agitated).toEqual({
+      valueType: "bool",
+      value: true,
+      comment: "고성",
+      source: "llm",
+    });
+    expect(ev.metrics.agentSpeakRatio.value).toBe(72.5);
   });
 });

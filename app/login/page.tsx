@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { signIn, useSession } from "next-auth/react";
-import { BookOpen, LogIn } from "lucide-react";
+import { LogIn, Radar } from "lucide-react";
 
 export default function LoginPage() {
   const { status } = useSession();
@@ -14,27 +14,27 @@ export default function LoginPage() {
   }, [status, router]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-surface px-6">
-      <div className="w-full max-w-sm rounded-2xl border border-gray-200 bg-white p-8 text-center shadow-sm">
-        <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-brand/10">
-          <BookOpen className="h-6 w-6 text-brand" strokeWidth={2.2} />
+    <div className="flex min-h-screen items-center justify-center bg-[var(--bg-subtle)] px-6">
+      <div className="w-full max-w-sm rounded-[20px] border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-8 text-center shadow-[0_12px_40px_rgba(26,26,25,0.06)]">
+        <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-[var(--brand-subtle)]">
+          <Radar className="h-7 w-7 text-[var(--brand)]" strokeWidth={2.2} />
         </div>
-        <h1 className="text-lg font-bold tracking-tight text-gray-900">X팀</h1>
-        <p className="mt-2 text-sm leading-relaxed text-gray-500">
-          X팀이 현재 개발중인 테스트 페이지입니다.
+        <h1 className="text-[22px] font-bold tracking-tight text-[var(--fg-primary)]">QRadar</h1>
+        <p className="mt-2 text-[14px] leading-relaxed text-[var(--fg-secondary)]">
+          당근서비스 콜 품질 평가 시스템
         </p>
 
         <button
           type="button"
           onClick={() => signIn("google", { callbackUrl: "/" })}
           disabled={status === "loading"}
-          className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-navy px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-navy-hover disabled:opacity-50"
+          className="mt-7 inline-flex w-full items-center justify-center gap-2 rounded-[12px] bg-[var(--brand)] px-5 py-3.5 text-[15px] font-bold text-white shadow-sm transition hover:bg-[var(--brand-hover)] disabled:opacity-50"
         >
           <LogIn className="h-4 w-4" />
           구글로 로그인
         </button>
 
-        <p className="mt-4 text-xs text-gray-400">@daangnservice.com 계정만 로그인할 수 있어요</p>
+        <p className="mt-4 text-[12px] text-[var(--fg-tertiary)]">@daangnservice.com 계정만 로그인할 수 있어요</p>
       </div>
     </div>
   );

@@ -1,23 +1,18 @@
-import { readFile } from "node:fs/promises";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { orgFromParam, canAccessOrg } from "@/lib/callQualityOrg";
-import { getConversationAudioUrl, downloadAudio } from "@/lib/genesys";
-import { saveTempFile, cleanupTempFile, transcodeToWav } from "@/lib/audio";
+import { orgFromParam, canAccessCallQualityPlayback } from "@/lib/callQualityOrg";
+import { loadMonoWav } from "@/lib/callAudioCache";
 
 export const runtime = "nodejs";
 export const maxDuration = 120; // Genesys 확보 + 다운로드 + 변환 여유
 export const dynamic = "force-dynamic";
 
-// conversation_id의 통화 음성을 Genesys에서 받아 재생용 WAV로 변환해 스트리밍(프록시).
+// conversation_id의 통화 음성을 Genesys에서 받아 재생용 mono WAV로 스트리밍(프록시).
+// - 내부 캐시는 stereo 마스터(peaks와 공유); 응답만 mono downmix.
 // - WAV: Genesys WEBM은 seek 정보가 없어 특정 구간 이동이 안 됨(WAV는 됨).
 // - HTTP Range(206) 지원: 브라우저의 구간 seek에 필요(없으면 0으로 튕김).
 // - 변환 결과를 짧게(10분) 메모리 캐시: seek마다 Genesys 재확보+재변환 방지. (영구 저장 아님)
 // 허용 계정만.
-
-const CACHE_TTL_MS = 10 * 60 * 1000;
-const CACHE_MAX = 30;
-const _cache = new Map<string, { bytes: Uint8Array; expiresAt: number }>();
 
 function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
   const ab = new ArrayBuffer(u8.byteLength);
@@ -48,42 +43,19 @@ function parseRange(range: string | null, total: number): { start: number; end: 
   return { start, end };
 }
 
-async function loadWav(conversationId: string): Promise<Uint8Array> {
-  const hit = _cache.get(conversationId);
-  if (hit && Date.now() < hit.expiresAt) return hit.bytes;
-
-  const tempPaths: string[] = [];
-  try {
-    const url = await getConversationAudioUrl(conversationId);
-    const { bytes } = await downloadAudio(url);
-    const srcPath = await saveTempFile(bytes, ".audio");
-    tempPaths.push(srcPath);
-    const wavPath = await transcodeToWav(srcPath);
-    tempPaths.push(wavPath);
-    const wav = new Uint8Array(await readFile(wavPath));
-
-    _cache.set(conversationId, { bytes: wav, expiresAt: Date.now() + CACHE_TTL_MS });
-    for (const [k, v] of _cache) if (Date.now() >= v.expiresAt) _cache.delete(k); // 만료 정리
-    while (_cache.size > CACHE_MAX) _cache.delete(_cache.keys().next().value as string); // 오래된 것부터
-    return wav;
-  } finally {
-    for (const p of tempPaths) await cleanupTempFile(p);
-  }
-}
-
 export async function GET(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return new Response("Unauthorized", { status: 401 });
 
   const url = new URL(req.url);
   const org = orgFromParam(url.searchParams.get("org"));
-  if (!canAccessOrg(org, session.user.email)) return new Response("Forbidden", { status: 403 });
+  if (!canAccessCallQualityPlayback(org, session.user.email)) return new Response("Forbidden", { status: 403 });
 
   const conversationId = url.searchParams.get("conversationId") ?? "";
   if (!conversationId) return new Response("conversationId required", { status: 400 });
 
   try {
-    const wav = await loadWav(conversationId);
+    const wav = await loadMonoWav(conversationId);
     const total = wav.byteLength;
     const base: Record<string, string> = {
       "Content-Type": "audio/wav",

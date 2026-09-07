@@ -1,4 +1,7 @@
 @import "tailwindcss";
+@import "./qms-tokens.css";
+@import "@seed-design/css/all.css";
+@import "./seed-layout.css";
 
 @theme {
   --color-brand: #ff6f0f;

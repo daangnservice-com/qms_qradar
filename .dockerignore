@@ -1,0 +1,40 @@
+# deps / build
+node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# git / editor
+.git
+.gitignore
+.gitattributes
+.vscode
+.idea
+.superpowers
+.vercel
+
+# secrets & local env (compose mounts .env.production on host)
+.env
+.env.*
+!.env.local.example
+
+# local data / uploads
+.data
+tmp
+/tmp
+uploads
+*.m4a
+*.pem
+
+# docs & reference (not needed in image)
+docs
+qms_ref
+README.md
+
+# tests (not needed at runtime image)
+**/*.test.ts
+**/*.test.tsx
+vitest.config.*

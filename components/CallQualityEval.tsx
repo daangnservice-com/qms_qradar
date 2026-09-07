@@ -1,20 +1,72 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Phone } from "lucide-react";
-import type { EvaluationResult } from "@/lib/types";
+import type { EvaluationResult, SampleFilters } from "@/lib/types";
 import { ORG_LABEL, type CallQualityOrg } from "@/lib/callQualityOrg";
+import { parseCallQualityDeepLink } from "@/lib/callQualityDeepLink";
 import SampleList from "@/components/SampleList";
 import ResultDrawer from "@/components/ResultDrawer";
+import EvalProgressWorkbench from "@/components/EvalProgressWorkbench";
+import CallObserveWorkbench from "@/components/CallObserveWorkbench";
 
-export default function CallQualityEval({ org }: { org: CallQualityOrg }) {
-  // 분석 결과를 conversationId별로 모두 보관해, 다른 항목을 분석해도 완료 표시가 유지되게 한다.
+/** 성장문화실 = 평가 진행 3열 워크벤치, 페이 = 기존 목록+드로어 */
+export default function CallQualityEval({
+  org,
+  defaultFilters,
+}: {
+  org: CallQualityOrg;
+  defaultFilters?: SampleFilters;
+}) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-0 flex-1 items-center justify-center text-[13px] text-[var(--fg-tertiary)]">
+          불러오는 중…
+        </div>
+      }
+    >
+      <CallQualityEvalInner org={org} defaultFilters={defaultFilters} />
+    </Suspense>
+  );
+}
+
+function CallQualityEvalInner({
+  org,
+  defaultFilters,
+}: {
+  org: CallQualityOrg;
+  defaultFilters?: SampleFilters;
+}) {
+  const searchParams = useSearchParams();
+  const { observe } = parseCallQualityDeepLink(searchParams);
+
+  if (org === "growth" && observe) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <CallObserveWorkbench org={org} />
+      </div>
+    );
+  }
+
+  if (org === "growth") {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <EvalProgressWorkbench org={org} defaultFilters={defaultFilters} />
+      </div>
+    );
+  }
+
+  return <PayCallQuality org={org} />;
+}
+
+function PayCallQuality({ org }: { org: CallQualityOrg }) {
   const [results, setResults] = useState<Record<string, EvaluationResult>>({});
   const [activeId, setActiveId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [loadingResult, setLoadingResult] = useState(false);
 
-  // 패널을 즉시 열고(반응 빠르게), 세션에 없으면 저장 결과를 백그라운드로 불러온다.
   const openFor = (id: string) => {
     setActiveId(id);
     setDrawerOpen(true);
@@ -30,18 +82,21 @@ export default function CallQualityEval({ org }: { org: CallQualityOrg }) {
   };
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-6 py-8 sm:px-10">
-      <header className="border-b border-gray-100 pb-6">
-        <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-gray-900">
-          <Phone className="h-5 w-5 text-navy" />
+    <div className="qms-page flex min-h-0 flex-1 flex-col">
+      <header className="border-b border-[var(--border-subtle)] px-5 py-4">
+        <h1 className="flex items-center gap-2 text-[20px] font-extrabold tracking-tight text-[var(--fg-primary)]">
+          <Phone className="h-5 w-5 text-[var(--brand)]" />
           콜 분석
-          <span className="rounded-full bg-navy/10 px-2 py-0.5 text-xs font-semibold text-navy">{ORG_LABEL[org]}</span>
+          <span className="rounded-full bg-[var(--brand-subtle)] px-2 py-0.5 text-[11px] font-semibold text-[var(--brand-hover)]">
+            {ORG_LABEL[org]}
+          </span>
         </h1>
-        <p className="mt-1.5 text-sm text-gray-500">
-          샘플에서 통화를 고르면 Genesys에서 녹취를 받아 AI가 통화 품질을 분석하고 공백(검색 대기) 구간을 초 단위로 살펴봐요 (AI 자동 분석)
+        <p className="mt-1 text-[12.5px] text-[var(--fg-secondary)]">
+          샘플에서 통화를 고르면 Genesys에서 녹취를 받아 AI가 통화 품질을 분석하고 공백(검색 대기) 구간을 초 단위로
+          살펴봐요.
         </p>
       </header>
-      <div className="mt-8">
+      <div className="qms-page-body">
         <SampleList
           org={org}
           onResult={(r) => {

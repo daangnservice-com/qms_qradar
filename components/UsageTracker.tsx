@@ -9,7 +9,7 @@ export default function UsageTracker() {
   const pathname = usePathname();
 
   useEffect(() => {
-    if (!pathname || pathname.startsWith("/api") || pathname === "/login") return;
+    if (!pathname || pathname.startsWith("/api") || pathname.startsWith("/ref") || pathname === "/login") return;
     const body = JSON.stringify({ path: pathname });
     try {
       if (typeof navigator !== "undefined" && navigator.sendBeacon) {

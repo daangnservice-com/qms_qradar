@@ -8,20 +8,26 @@ import type { UsageStats } from "@/lib/bigquery";
 
 // 경로 → 화면 이름(표시용). 새 페이지가 생기면 여기에 추가.
 const PATH_LABELS: Record<string, string> = {
-  "/": "콜 분석",
-  "/call-quality": "콜 분석",
-  "/damage": "파손 판별",
-  "/feedback": "피드백",
+  "/": "홈",
+  "/call-quality": "전체 평가",
+  "/call-quality/high-risk": "고위험군 평가",
+  "/call-quality/needs-review": "수기 평가 필요",
+  "/call-quality/mine": "내 평가",
+  "/eval-ops/schedule": "평가 스케줄",
+  "/eval-ops/assign": "평가 배분",
+  "/eval-ops/auto-run": "자동 평가 실행",
+  "/eval-ops/stt-batch": "STT 배치 스케줄",
+  "/eval-ops/review-status": "검수 현황",
+  "/eval-design/accuracy": "정확도 대시보드",
   "/usage": "사용량",
+  "/admin/eval-schedule": "AI 평가 job",
+  "/guide": "이용 설명서",
 };
 const pathLabel = (p: string) => PATH_LABELS[p] ?? p;
 
 // 액션 이벤트 → 기능 이름(표시용).
 const ACTION_LABELS: Record<string, string> = {
-  damage_detect: "파손 판별 실행",
   call_evaluate: "콜 분석 실행",
-  chat_ask: "챗봇 질문",
-  feedback_submit: "피드백 제출",
 };
 const actionLabel = (e: string) => ACTION_LABELS[e] ?? e;
 

@@ -1,13 +1,13 @@
 version: '3.8'
 
 services:
-  helpdesk-x:
+  qradar:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: daangn-service-helpdesk-x
+    container_name: daangn-service-qradar
     restart: always
     ports:
-      - "3000:3000"
+      - "3010:3000"
     env_file:
       - .env.production

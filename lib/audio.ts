@@ -12,7 +12,8 @@ export async function saveTempFile(bytes: Uint8Array, ext: string): Promise<stri
 }
 
 // Genesys 녹취는 WEBM(Opus) 등 Gemini File API가 보장하지 않는 포맷일 수 있어,
-// ffmpeg로 wav(16kHz mono)로 정규화한다. 이 wav로 무음분석 + Gemini 업로드를 모두 수행.
+// ffmpeg로 wav(16kHz, channels 지정)로 정규화한다.
+// channels=1: silence/Gemini 등 모노 경로. channels=2: STT·재생 캐시(stereo 마스터).
 export async function transcodeToWav(inputPath: string, channels = 1): Promise<string> {
   const outPath = `${inputPath.replace(/\.[^.]+$/, "")}-${channels}ch-${Date.now()}.wav`;
   const args = ["-y", "-i", inputPath, "-ac", String(channels), "-ar", "16000", outPath];

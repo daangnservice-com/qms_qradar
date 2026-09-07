@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>QRadar · 평가 현황 UI 레퍼런스</title>
+  <style>
+    :root {
+      --c-carrot-50: #fff3eb;
+      --c-carrot-500: #ff6f0f;
+      --c-carrot-600: #e85d00;
+      --c-green-50: #e6f7ef;
+      --c-green-500: #00a05b;
+      --c-green-600: #00874c;
+      --c-gray-00: #ffffff;
+      --c-gray-50: #fafafa;
+      --c-gray-100: #f4f4f3;
+      --c-gray-200: #eaeae8;
+      --c-gray-300: #dbdbd8;
+      --c-gray-500: #939390;
+      --c-gray-600: #6a6a67;
+      --c-gray-900: #1a1a19;
+      --c-blue-50: #eaf3ff;
+      --c-blue-500: #1c7ed6;
+      --c-red-50: #ffefef;
+      --c-red-500: #e03131;
+      --c-amber-50: #fff8e1;
+      --c-amber-500: #f08c00;
+      --bg-canvas: var(--c-gray-00);
+      --bg-subtle: var(--c-gray-50);
+      --bg-muted: var(--c-gray-100);
+      --fg-primary: var(--c-gray-900);
+      --fg-secondary: var(--c-gray-600);
+      --fg-tertiary: var(--c-gray-500);
+      --border-subtle: var(--c-gray-200);
+      --border-default: var(--c-gray-300);
+      --brand: var(--c-carrot-500);
+      --brand-subtle: var(--c-carrot-50);
+      --brand-fg: var(--c-carrot-600);
+      --warning: var(--c-amber-500);
+      --danger: var(--c-red-500);
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-xl: 18px;
+      --cols: minmax(260px, 1.8fr) 100px 52px 64px 52px 64px minmax(96px, max-content);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", Pretendard, "Malgun Gothic", "Segoe UI", Roboto, sans-serif;
+      color: var(--fg-primary);
+      background: var(--bg-subtle);
+      -webkit-font-smoothing: antialiased;
+    }
+    button, select { font-family: inherit; }
+    .shell { display: flex; min-height: 100vh; }
+    .sidebar {
+      width: 248px;
+      flex-shrink: 0;
+      background: var(--bg-canvas);
+      border-right: 1px solid var(--border-subtle);
+      display: flex;
+      flex-direction: column;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      height: 64px;
+      padding: 0 16px;
+    }
+    .brand-mark {
+      width: 36px; height: 36px; border-radius: 12px;
+      background: var(--brand); color: #fff;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .brand-title { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+    .brand-sub { font-size: 11px; font-weight: 500; color: var(--fg-tertiary); }
+    .nav { padding: 8px 12px; flex: 1; }
+    .nav-label { padding: 0 12px 6px; font-size: 11px; font-weight: 700; color: var(--fg-tertiary); }
+    .nav-item {
+      display: flex; align-items: center; gap: 12px;
+      padding: 10px 12px; border-radius: 12px; font-size: 13px; font-weight: 500;
+      color: var(--fg-secondary);
+    }
+    .nav-item.active { background: var(--brand-subtle); color: var(--brand); font-weight: 700; }
+    .main { flex: 1; min-width: 0; }
+    .page { max-width: 1280px; margin: 0 auto; padding: 20px; }
+    .kicker { margin: 0; font-size: 12px; font-weight: 700; color: var(--fg-tertiary); }
+    h1 { margin: 2px 0 6px; font-size: 28px; font-weight: 800; letter-spacing: -0.03em; }
+    .lede { margin: 0; font-size: 15px; color: var(--fg-secondary); }
+    .callout {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: var(--c-blue-50);
+      color: #165a9c;
+    }
+    .callout strong { display: block; font-size: 13px; margin-bottom: 2px; }
+    .callout span { font-size: 12px; opacity: 0.9; }
+    .filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 16px; }
+    .field { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+    .field span { font-size: 12px; font-weight: 700; color: var(--fg-tertiary); }
+    select {
+      height: 36px; padding: 0 10px; font-size: 13px; font-weight: 500;
+      border: 1px solid var(--border-default); border-radius: var(--radius-md);
+      background: var(--bg-canvas); color: var(--fg-primary);
+    }
+    .chips { display: flex; gap: 6px; }
+    .chip {
+      height: 32px; padding: 0 12px; border-radius: 999px; cursor: pointer;
+      border: 1px solid var(--border-subtle); background: var(--bg-canvas);
+      color: var(--fg-secondary); font-size: 13px; font-weight: 600;
+    }
+    .chip[aria-pressed="true"] {
+      background: var(--brand-subtle); border-color: #ffd0ad; color: var(--brand-fg);
+    }
+    .stats {
+      display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-top: 16px;
+    }
+    @media (min-width: 640px) { .stats { grid-template-columns: repeat(3, 1fr); } }
+    @media (min-width: 1024px) { .stats { grid-template-columns: repeat(6, 1fr); } }
+    .stat {
+      background: var(--bg-canvas); border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg); padding: 12px 16px;
+    }
+    .stat label { display: block; font-size: 12px; font-weight: 700; color: var(--fg-tertiary); }
+    .stat b { display: block; margin-top: 4px; font-size: 22px; letter-spacing: -0.03em; }
+    .tree {
+      margin-top: 16px; overflow: hidden;
+      border: 1px solid var(--border-subtle); border-radius: var(--radius-xl);
+      background: var(--bg-canvas);
+    }
+    .tree-head { padding: 12px 18px; border-bottom: 1px solid var(--border-subtle); }
+    .tree-head p { margin: 0; font-size: 13px; color: var(--fg-secondary); line-height: 1.5; }
+    .status-pills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .pill {
+      display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 600; background: var(--c-amber-50); color: var(--warning);
+    }
+    .tree-scroll { overflow: auto; }
+    .tree-inner { min-width: 780px; }
+    .row, .thead {
+      display: grid; grid-template-columns: var(--cols); gap: 8px; align-items: center;
+      padding: 8px 18px; border-bottom: 1px solid var(--border-subtle);
+    }
+    .thead { background: var(--bg-subtle); font-size: 12px; font-weight: 700; color: var(--fg-tertiary); }
+    .row.d0 { background: var(--bg-subtle); }
+    .row.d3 { background: #fafafa; }
+    .row.clickable { cursor: pointer; }
+    .row.clickable:hover { background: var(--bg-subtle); }
+    .name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+    .caret { width: 12px; flex-shrink: 0; font-size: 11px; color: var(--fg-tertiary); }
+    .kind {
+      flex-shrink: 0; padding: 1px 4px; border-radius: 4px;
+      border: 1px solid var(--border-subtle); background: var(--bg-canvas);
+      font-size: 10px; font-weight: 600; line-height: 16px; color: var(--fg-tertiary);
+    }
+    .name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+    .row.d0 .name-text, .row.d1 .name-text { font-weight: 700; }
+    .badge {
+      display: inline-flex; width: max-content; padding: 3px 8px; border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+    }
+    .badge.ok { background: var(--c-green-50); color: var(--c-green-600); }
+    .badge.warn { background: transparent; color: var(--warning); box-shadow: inset 0 0 0 1px #f3d39a; }
+    .num { font-size: 14px; font-weight: 700; }
+    .num.warn { color: var(--warning); }
+    .num.mute { color: var(--fg-tertiary); font-weight: 500; }
+    .action { justify-self: end; }
+    .ghost {
+      height: 32px; padding: 0 10px; border-radius: var(--radius-md);
+      border: 1px solid var(--border-subtle); background: var(--bg-canvas);
+      color: var(--fg-secondary); font-size: 12.5px; font-weight: 600; cursor: pointer;
+    }
+    .ghost:hover { background: var(--bg-muted); }
+    .empty { padding: 24px 18px; text-align: center; font-size: 14px; color: var(--fg-tertiary); }
+    .overlay {
+      position: fixed; inset: 0; background: rgba(26, 26, 25, 0.45);
+      display: none; align-items: center; justify-content: center; padding: 24px; z-index: 40;
+    }
+    .overlay.open { display: flex; }
+    .dialog {
+      width: min(720px, 100%); max-height: calc(100vh - 48px); overflow: auto;
+      background: var(--bg-canvas); border-radius: 20px; padding: 20px 20px 16px;
+      box-shadow: 0 24px 64px rgba(0,0,0,.18);
+    }
+    .dialog h2 { margin: 0; font-size: 18px; }
+    .dialog .desc { margin: 4px 0 12px; font-size: 13px; color: var(--fg-secondary); }
+    .card { border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: 16px; }
+    .card-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .card-top b { font-size: 13px; }
+    .block { border: 1px solid var(--border-subtle); border-radius: 12px; padding: 12px; background: var(--bg-subtle); margin-bottom: 10px; }
+    .block .ttl { font-size: 11px; font-weight: 700; color: var(--fg-tertiary); margin-bottom: 8px; }
+    .block p, .block dd { margin: 0; font-size: 12px; line-height: 1.55; white-space: pre-wrap; }
+    .kv { display: grid; grid-template-columns: minmax(100px, 160px) 1fr; gap: 8px; font-size: 12px; margin-top: 6px; }
+    .kv dt { color: var(--fg-secondary); font-weight: 500; }
+    .wrong { border-color: color-mix(in srgb, var(--danger) 25%, transparent); background: color-mix(in srgb, var(--danger) 6%, white); }
+    .wrong .ttl { color: var(--danger); }
+    .raw {
+      border: 1px solid var(--border-subtle); border-radius: 10px; margin-top: 8px; overflow: hidden;
+    }
+    .raw button {
+      width: 100%; display: flex; justify-content: space-between; padding: 8px 12px;
+      border: 0; background: transparent; cursor: pointer; font-size: 11px; font-weight: 600; color: var(--fg-secondary);
+    }
+    .raw pre { margin: 0; padding: 12px; border-top: 1px solid var(--border-subtle); font-size: 11px; overflow: auto; max-height: 240px; }
+    .dialog-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
+    .note { margin-top: 20px; font-size: 11px; color: var(--fg-tertiary); }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.48M7.76 16.24a6 6 0 0 1 0-8.48M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+        </div>
+        <div>
+          <div class="brand-title">QRadar</div>
+          <div class="brand-sub">콜 품질 평가</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <div class="nav-label">품질평가</div>
+        <div class="nav-item">리포트</div>
+        <div class="nav-item active">평가 현황</div>
+        <div class="nav-item">케이스 상세</div>
+        <div class="nav-item">월별 집계</div>
+      </nav>
+    </aside>
+    <main class="main">
+      <div class="page" id="app"></div>
+    </main>
+  </div>
+  <div class="overlay" id="overlay" role="dialog" aria-modal="true">
+    <div class="dialog" id="dialog"></div>
+  </div>
+
+<script>
+const MONTHS = ["2026-08", "2026-07", "2026-06"];
+
+function caseNode(id, name, evaluated) {
+  return { id, name, status: evaluated ? "evaluated" : "pending", statusLabel: evaluated ? "평가완료" : "대기" };
+}
+function targetNode(id, name, evaluated, cases) {
+  return {
+    id, name, status: evaluated ? "evaluated" : "pending", statusLabel: evaluated ? "평가완료" : "대기",
+    targetCount: 1, openTargetCount: evaluated ? 0 : 1,
+    caseCount: cases.length, openCaseCount: cases.filter((c) => c.status !== "evaluated").length, cases,
+  };
+}
+function sheetNode(id, name, status, statusLabel, targets) {
+  return {
+    id, name, status, statusLabel, targets,
+    targetCount: targets.length,
+    openTargetCount: targets.filter((t) => t.status !== "evaluated").length,
+    caseCount: targets.reduce((n, t) => n + t.caseCount, 0),
+    openCaseCount: targets.reduce((n, t) => n + t.openCaseCount, 0),
+  };
+}
+function rollup(sheets) {
+  const openSheetCount = sheets.filter((s) => s.status !== "confirmed").length;
+  return {
+    targetCount: sheets.reduce((n, s) => n + s.targetCount, 0),
+    openTargetCount: sheets.reduce((n, s) => n + s.openTargetCount, 0),
+    caseCount: sheets.reduce((n, s) => n + s.caseCount, 0),
+    openCaseCount: sheets.reduce((n, s) => n + s.openCaseCount, 0),
+    sheetCount: sheets.length, openSheetCount,
+    status: openSheetCount > 0 ? "open" : "confirmed",
+    statusLabel: openSheetCount > 0 ? "미확정" : "확정",
+  };
+}
+function templateNode(id, name, sheets) { return { id, name, sheets, ...rollup(sheets) }; }
+function teamNode(id, name, templates) {
+  return { id, name, templates, ...rollup(templates.flatMap((t) => t.sheets)) };
+}
+function monthPayload(month, tree, byEvalStatus) {
+  const sheets = tree.flatMap((t) => t.templates.flatMap((tpl) => tpl.sheets));
+  return {
+    month, tree, byEvalStatus, truncated: false,
+    evalCount: sheets.length,
+    openEvalCount: sheets.filter((s) => s.status !== "confirmed").length,
+    targetCount: tree.reduce((n, t) => n + t.targetCount, 0),
+    openTargetCount: tree.reduce((n, t) => n + t.openTargetCount, 0),
+    caseCount: tree.reduce((n, t) => n + t.caseCount, 0),
+    openCaseCount: tree.reduce((n, t) => n + t.openCaseCount, 0),
+  };
+}
+
+const DATA = {
+  "2026-08": monthPayload("2026-08", [
+    teamNode("team-ad", "광고팀", [
+      templateNode("tpl-community", "커뮤니티 문의", [
+        sheetNode("eval-801", "8월 품질평가", "gp_review", "GP 검토", [
+          targetNode("tgt-8011", "김민수", false, [
+            caseNode("81001", "중고거래 게시글 신고", false),
+            caseNode("81002", "사기 의심 문의", false),
+            caseNode("81003", "차단 해제 요청", true),
+          ]),
+          targetNode("tgt-8012", "이서연", true, [
+            caseNode("81004", "채팅 매너 위반", true),
+            caseNode("81005", "중복 게시글", true),
+          ]),
+        ]),
+        sheetNode("eval-802", "8월 품질평가 2차", "confirmed", "확정", [
+          targetNode("tgt-8021", "최하늘", true, [
+            caseNode("81006", "거래 취소 분쟁", true),
+            caseNode("81007", "환불 요청", true),
+          ]),
+        ]),
+      ]),
+      templateNode("tpl-phone", "전화 CS", [
+        sheetNode("eval-803", "8월 전화", "leader_review", "리더 검토", [
+          targetNode("tgt-8031", "정우진", false, [
+            caseNode("81008", "계정 정지 문의", false),
+            caseNode("81009", "본인인증 실패", false),
+          ]),
+        ]),
+      ]),
+    ]),
+    teamNode("team-pay", "페이팀", [
+      templateNode("tpl-chat", "채팅 문의", [
+        sheetNode("eval-804", "8월 채팅", "confirmed", "확정", [
+          targetNode("tgt-8041", "박지훈", true, [
+            caseNode("81010", "결제 실패", true),
+            caseNode("81011", "송금 지연", true),
+          ]),
+        ]),
+      ]),
+    ]),
+  ], [
+    { status: "gp_review", label: "GP 검토", count: 1 },
+    { status: "leader_review", label: "리더 검토", count: 1 },
+    { status: "confirmed", label: "확정", count: 2 },
+  ]),
+  "2026-07": monthPayload("2026-07", [
+    teamNode("team-ad", "광고팀", [
+      templateNode("tpl-community", "커뮤니티 문의", [
+        sheetNode("eval-701", "7월 품질평가", "confirmed", "확정", [
+          targetNode("tgt-7011", "김민수", true, [
+            caseNode("71001", "허위매물 신고", true),
+            caseNode("71002", "닉네임 변경", true),
+          ]),
+        ]),
+      ]),
+    ]),
+    teamNode("team-pay", "페이팀", [
+      templateNode("tpl-chat", "채팅 문의", [
+        sheetNode("eval-702", "7월 채팅", "confirmed", "확정", [
+          targetNode("tgt-7021", "박지훈", true, [
+            caseNode("71003", "카드 등록 오류", true),
+            caseNode("71004", "영수증 재발급", true),
+          ]),
+        ]),
+      ]),
+    ]),
+  ], [{ status: "confirmed", label: "확정", count: 2 }]),
+  "2026-06": monthPayload("2026-06", [], []),
+};
+
+const CASES = {
+  "81001": {
+    title: "케이스 81001", team: "광고팀", result: "hot", status: "pending",
+    cold: false, wrong: false, memo: "고객이 보낸 대화 캡처를 기준으로 선입금 유도 여부를 확인하세요.",
+    content: { inquiry: "중고거래 게시글이 사기 같아요. 상대가 선입금을 요구합니다.", channel: "채팅", url: "https://www.daangn.com/articles/example" },
+  },
+  "81002": {
+    title: "케이스 81002", team: "광고팀", result: "cold", status: "pending",
+    cold: true, wrong: "공감 표현 누락 · 다음 안내 없이 종료", memo: "",
+    content: "사기 의심 문의인데 상담원이 정책만 안내하고 대화를 끝냈어요.",
+    scores: { empathy: 0, next_step: 0, accuracy: 1 },
+  },
+  "81004": {
+    title: "케이스 81004", team: "광고팀", result: "hot", status: "evaluated",
+    cold: false, wrong: false, memo: "",
+    content: "채팅에서 비속어를 사용한 상대를 신고하고 싶어요.",
+  },
+  "81008": {
+    title: "케이스 81008", team: "광고팀", result: "hot", status: "pending",
+    cold: false, wrong: false, memo: "본인확인 후 제재 이력을 같이 보세요.",
+    content: "계정 정지 사유를 전화로 확인하고 해제 가능 여부를 문의.",
+  },
+  "81010": {
+    title: "케이스 81010", team: "페이팀", result: "hot", status: "evaluated",
+    cold: false, wrong: false, memo: "",
+    content: "결제 실패 안내 후 재시도 방법을 안내한 케이스.",
+  },
+};
+
+function filterOpenTree(tree) {
+  const empty = { targetCount: 0, openTargetCount: 0, caseCount: 0, openCaseCount: 0 };
+  const add = (a, b) => ({
+    targetCount: a.targetCount + b.targetCount,
+    openTargetCount: a.openTargetCount + b.openTargetCount,
+    caseCount: a.caseCount + b.caseCount,
+    openCaseCount: a.openCaseCount + b.openCaseCount,
+  });
+  const sheetOpen = (s) => s.status !== "confirmed" || s.openTargetCount > 0 || s.openCaseCount > 0;
+  const out = [];
+  for (const team of tree) {
+    const templates = [];
+    let teamCounts = empty;
+    let sheetCount = 0;
+    for (const tpl of team.templates) {
+      const sheets = tpl.sheets.filter(sheetOpen);
+      if (!sheets.length) continue;
+      const counts = sheets.reduce(add, empty);
+      templates.push({ ...tpl, sheets, ...counts, sheetCount: sheets.length, openSheetCount: sheets.length, status: "open", statusLabel: "미확정" });
+      teamCounts = add(teamCounts, counts);
+      sheetCount += sheets.length;
+    }
+    if (!templates.length) continue;
+    out.push({ ...team, templates, ...teamCounts, sheetCount, openSheetCount: sheetCount, status: "open", statusLabel: "미확정" });
+  }
+  return out;
+}
+
+function doneStatus(status) {
+  return status === "confirmed" || status === "evaluated";
+}
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function countCell(v, warn) {
+  if (v == null) return `<span class="num mute">—</span>`;
+  return `<span class="num ${warn && v > 0 ? "warn" : ""}">${v}</span>`;
+}
+function badge(status, label) {
+  return `<span class="badge ${doneStatus(status) ? "ok" : "warn"}">${esc(label || "미지정")}</span>`;
+}
+
+const state = {
+  month: "2026-08",
+  scope: "open",
+  expanded: {},
+  openSheets: {},
+  openTargets: {},
+  caseId: null,
+};
+
+function resetExpand() {
+  state.expanded = {};
+  state.openSheets = {};
+  state.openTargets = {};
+}
+
+function rowHtml({ depth, kind, name, status, statusLabel, targetCount, openTargetCount, caseCount, openCaseCount, action, toggleId, activateId, expanded }) {
+  const pad = depth * 16;
+  const clickable = toggleId || activateId;
+  const caret = toggleId ? (expanded ? "▾" : "▸") : "";
+  return `<div class="row d${depth} ${clickable ? "clickable" : ""}" ${toggleId ? `data-toggle="${esc(toggleId)}"` : ""} ${activateId ? `data-case="${esc(activateId)}"` : ""}>
+    <span class="name" style="padding-left:${pad}px">
+      <span class="caret">${caret}</span>
+      <span class="kind">${esc(kind)}</span>
+      <span class="name-text">${esc(name)}</span>
+    </span>
+    ${badge(status, statusLabel)}
+    ${countCell(targetCount)}
+    ${countCell(openTargetCount, true)}
+    ${countCell(caseCount)}
+    ${countCell(openCaseCount, true)}
+    <span class="action">${action || ""}</span>
+  </div>`;
+}
+
+function renderTree(data, emptyLabel) {
+  const rows = [];
+  for (const team of data.tree) {
+    const teamOpen = state.expanded[team.id] !== false;
+    rows.push(rowHtml({ depth: 0, kind: "팀", name: team.name, status: team.status, statusLabel: team.statusLabel, targetCount: team.targetCount, openTargetCount: team.openTargetCount, caseCount: team.caseCount, openCaseCount: team.openCaseCount, toggleId: team.id, expanded: teamOpen }));
+    if (!teamOpen) continue;
+    for (const tpl of team.templates) {
+      const tplOpen = state.expanded[tpl.id] !== false;
+      rows.push(rowHtml({ depth: 1, kind: "템플릿", name: tpl.name, status: tpl.status, statusLabel: tpl.statusLabel, targetCount: tpl.targetCount, openTargetCount: tpl.openTargetCount, caseCount: tpl.caseCount, openCaseCount: tpl.openCaseCount, toggleId: tpl.id, expanded: tplOpen }));
+      if (!tplOpen) continue;
+      for (const sheet of tpl.sheets) {
+        const sheetOpen = !!state.openSheets[sheet.id];
+        const action = sheet.targets.length
+          ? `<button class="ghost" type="button" data-sheet="${esc(sheet.id)}">${sheetOpen ? "접기" : `대상 ${sheet.targets.length}`}</button>`
+          : "";
+        rows.push(rowHtml({ depth: 2, kind: "평가표", name: sheet.name, status: sheet.status, statusLabel: sheet.statusLabel, targetCount: sheet.targetCount, openTargetCount: sheet.openTargetCount, caseCount: sheet.caseCount, openCaseCount: sheet.openCaseCount, action }));
+        if (!sheetOpen) continue;
+        for (const target of sheet.targets) {
+          const tOpen = !!state.openTargets[target.id];
+          const tAction = target.cases.length
+            ? `<button class="ghost" type="button" data-target="${esc(target.id)}">${tOpen ? "접기" : `케이스 ${target.cases.length}`}</button>`
+            : "";
+          rows.push(rowHtml({ depth: 3, kind: "타겟", name: target.name, status: target.status, statusLabel: target.statusLabel, caseCount: target.caseCount, openCaseCount: target.openCaseCount, action: tAction }));
+          if (!tOpen) continue;
+          for (const c of target.cases) {
+            rows.push(rowHtml({ depth: 4, kind: "케이스", name: c.name, status: c.status, statusLabel: c.statusLabel, activateId: c.id }));
+          }
+        }
+      }
+    }
+  }
+  const pills = (data.byEvalStatus || []).map((s) => `<span class="pill">${esc(s.label)} ${s.count}</span>`).join("");
+  return `<div class="tree">
+    <div class="tree-head">
+      <p>팀 → 템플릿 → 평가표까지 기본으로 보여요. 평가 타겟·케이스는 버튼을 눌러 펼치고, 케이스를 누르면 상세가 열려요. 확정 기준은 회차 confirmed, 대상자·케이스 evaluated예요.</p>
+      ${pills ? `<div class="status-pills">${pills}</div>` : ""}
+    </div>
+    <div class="tree-scroll"><div class="tree-inner">
+      <div class="thead"><span>항목</span><span>상태</span><span>대상</span><span>미완 대상</span><span>케이스</span><span>미완 케이스</span><span></span></div>
+      ${rows.join("") || `<div class="empty">${esc(emptyLabel)}</div>`}
+    </div></div>
+  </div>`;
+}
+
+function renderApp() {
+  const data = DATA[state.month];
+  const tree = state.scope === "all" ? data.tree : filterOpenTree(data.tree);
+  const treeData = { ...data, tree };
+  const emptyLabel = state.scope === "open" ? "이 달에 미확정 평가가 없어요" : "이 달에 표시할 평가가 없어요";
+  document.getElementById("app").innerHTML = `
+    <p class="kicker">품질평가</p>
+    <h1>평가 현황</h1>
+    <p class="lede">월별 평가표·대상·케이스 진행 상태를 봐요. 기본은 당월이고, 과거 월도 고를 수 있어요.</p>
+    <div class="callout">
+      <strong>UI 레퍼런스 · 샘플 데이터</strong>
+      <span>서버·로그인·인터넷 없이 이 파일만 열면 됩니다. 평가월·미확정/전체·트리 펼침·케이스 팝업을 그대로 써 보세요.</span>
+    </div>
+    <div class="filters">
+      <label class="field">
+        <span>평가월</span>
+        <select id="month">
+          ${MONTHS.map((m) => `<option value="${m}" ${m === state.month ? "selected" : ""}>${m}</option>`).join("")}
+        </select>
+      </label>
+      <div class="field">
+        <span>보기</span>
+        <div class="chips">
+          <button type="button" class="chip" data-scope="open" aria-pressed="${state.scope === "open"}">미확정</button>
+          <button type="button" class="chip" data-scope="all" aria-pressed="${state.scope === "all"}">전체</button>
+        </div>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><label>회차</label><b>${data.openEvalCount}/${data.evalCount}</b></div>
+      <div class="stat"><label>미확정 회차</label><b>${data.openEvalCount}</b></div>
+      <div class="stat"><label>대상</label><b>${data.openTargetCount}/${data.targetCount}</b></div>
+      <div class="stat"><label>미완료 대상</label><b>${data.openTargetCount}</b></div>
+      <div class="stat"><label>케이스</label><b>${data.openCaseCount}/${data.caseCount}</b></div>
+      <div class="stat"><label>미완료 케이스</label><b>${data.openCaseCount}</b></div>
+    </div>
+    ${renderTree(treeData, emptyLabel)}
+    <p class="note">QRadar 평가 현황 화면 레퍼런스 · 샘플이며 실제 평가 데이터가 아닙니다.</p>
+  `;
+  bindApp();
+  renderDialog();
+}
+
+function contentHtml(content) {
+  if (content && typeof content === "object") {
+    return Object.entries(content).map(([k, v]) => `<div class="kv"><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("");
+  }
+  return `<p>${esc(content || "(내용 없음)")}</p>`;
+}
+
+function renderDialog() {
+  const overlay = document.getElementById("overlay");
+  const id = state.caseId;
+  overlay.classList.toggle("open", Boolean(id));
+  if (!id) return;
+  const row = CASES[id] || {
+    title: `케이스 ${id}`, team: "샘플", result: "hot", status: "pending",
+    cold: false, wrong: false, memo: "", content: "레퍼런스용 샘플 케이스입니다. 실제 상담 내용은 없어요.",
+  };
+  const badges = [
+    row.cold ? `<span class="badge warn">Cold</span>` : `<span class="badge ok">${esc(row.result || "—")}</span>`,
+    row.wrong ? `<span class="badge warn">오답</span>` : "",
+    row.memo ? `<span class="pill" style="background:#eaf3ff;color:#1c7ed6">메모</span>` : "",
+    `<span class="badge warn" style="color:#6a6a67;box-shadow:inset 0 0 0 1px #eaeae8">${esc(row.status)}</span>`,
+    `<span style="font-size:11px;color:var(--fg-tertiary)">${esc(row.team)}</span>`,
+  ].join("");
+  document.getElementById("dialog").innerHTML = `
+    <h2>${esc(row.title)}</h2>
+    <p class="desc">케이스 상세와 같은 내용이에요.</p>
+    <div class="card">
+      <div class="card-top"><b>${esc(row.title)}</b>${badges}</div>
+      <div class="block"><div class="ttl">문의 / 케이스 내용</div>${contentHtml(row.content)}</div>
+      ${row.wrong
+        ? `<div class="block wrong"><div class="ttl">오답 항목</div><p>${esc(row.wrong)}</p></div>`
+        : `<p style="font-size:12px;color:var(--fg-tertiary)">오답 항목 없음</p>`}
+      ${row.memo ? `<div class="block"><div class="ttl">메모</div><p>${esc(row.memo)}</p></div>` : ""}
+      ${row.scores ? `<div class="raw"><button type="button" data-raw>원본 case_scores <span>원본</span></button><pre hidden>${esc(JSON.stringify(row.scores, null, 2))}</pre></div>` : ""}
+    </div>
+    <div class="dialog-foot"><button class="ghost" type="button" id="close-dialog">닫기</button></div>
+  `;
+  document.getElementById("close-dialog").onclick = () => { state.caseId = null; renderDialog(); };
+  const rawBtn = document.querySelector("[data-raw]");
+  if (rawBtn) rawBtn.onclick = () => {
+    const pre = rawBtn.nextElementSibling;
+    const open = !pre.hidden;
+    pre.hidden = open;
+    rawBtn.querySelector("span").textContent = open ? "원본" : "접기";
+  };
+}
+
+function bindApp() {
+  document.getElementById("month").onchange = (e) => {
+    state.month = e.target.value;
+    resetExpand();
+    state.caseId = null;
+    renderApp();
+  };
+  document.querySelectorAll("[data-scope]").forEach((btn) => {
+    btn.onclick = () => { state.scope = btn.dataset.scope; renderApp(); };
+  });
+  document.querySelectorAll("[data-toggle]").forEach((el) => {
+    el.onclick = () => {
+      const id = el.dataset.toggle;
+      state.expanded[id] = state.expanded[id] === false;
+      renderApp();
+    };
+  });
+  document.querySelectorAll("[data-sheet]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      state.openSheets[btn.dataset.sheet] = !state.openSheets[btn.dataset.sheet];
+      renderApp();
+    };
+  });
+  document.querySelectorAll("[data-target]").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      state.openTargets[btn.dataset.target] = !state.openTargets[btn.dataset.target];
+      renderApp();
+    };
+  });
+  document.querySelectorAll("[data-case]").forEach((el) => {
+    el.onclick = () => { state.caseId = el.dataset.case; renderDialog(); };
+  });
+}
+
+document.getElementById("overlay").addEventListener("click", (e) => {
+  if (e.target.id === "overlay") { state.caseId = null; renderDialog(); }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && state.caseId) { state.caseId = null; renderDialog(); }
+});
+
+renderApp();
+</script>
+</body>
+</html>

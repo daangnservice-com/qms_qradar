@@ -17,6 +17,15 @@ export async function describeApiError(res: Response): Promise<string> {
       "→ 이미지 장수를 줄이거나 용량이 작은 파일로 다시 시도해 주세요.",
     ].join("\n");
   }
+  if (res.status === 409) {
+    try {
+      const body = await res.json();
+      if (body?.error) return String(body.error);
+    } catch {
+      /* fall through */
+    }
+    return "동일 conversation에 대한 평가가 이미 진행 중입니다.";
+  }
   // 그 외: 서버가 준 JSON 에러 메시지를 우선 사용 (없으면 상태코드)
   try {
     const body = await res.json();

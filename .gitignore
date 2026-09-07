@@ -12,10 +12,12 @@ next-env.d.ts
 # production
 /build
 
-# env
+# env / secrets (never commit real keys)
 .env
-.env.local
-.env*.local
+.env.*
+!.env.local.example
+env.download
+*.download
 
 # debug logs
 npm-debug.log*
@@ -25,11 +27,16 @@ yarn-error.log*
 # misc
 .DS_Store
 *.pem
+t.html
 
 # uploads / temp audio
 /tmp
 /uploads
 *.m4a
+.data/
+
+# local reference dumps (HTML exports, not app source)
+qms_ref/
 
 # editor
 .vscode/

@@ -3,10 +3,35 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("next-auth", () => ({ getServerSession: vi.fn() }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
 vi.mock("@/lib/evaluationSamples", () => ({ listEvaluationSamples: vi.fn() }));
-vi.mock("@/lib/analysisStore", () => ({ listAnalyzedConversationIds: vi.fn().mockResolvedValue([]) }));
+vi.mock("@/lib/analysisStore", () => ({
+  listAnalyzedConversationIds: vi.fn().mockResolvedValue([]),
+  listEvalFlagsByConversationIds: vi.fn().mockResolvedValue(new Map()),
+  listRecentAnalyzedConversationIds: vi.fn().mockResolvedValue([]),
+  listRecentConversationIdsByReview: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("@/lib/highRiskFlagStore", () => ({
+  listHighRiskFlagRules: vi.fn().mockResolvedValue([]),
+  listLongCallConversationIds: vi.fn().mockResolvedValue([]),
+  listHighRiskConversationIds: vi.fn().mockResolvedValue({ ids: [], longCallIds: [] }),
+}));
+vi.mock("@/lib/evalReviewClaimStore", () => ({
+  listActiveClaimsByConversationIds: vi.fn().mockResolvedValue(new Map()),
+}));
+vi.mock("@/lib/evalReviewMine", () => ({
+  listMyEvalQueueConversationIds: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("@/lib/evalReviewClaimCache", () => ({
+  rememberEvalSamples: vi.fn(),
+  cachedEvalSamplesFor: vi.fn().mockReturnValue([]),
+}));
+vi.mock("@/lib/sttPresence", () => ({
+  listSttPresenceByConversationIds: vi.fn().mockResolvedValue(new Map()),
+  listRecentConversationIdsWithStt: vi.fn().mockResolvedValue([]),
+}));
 
 import { getServerSession } from "next-auth";
 import { listEvaluationSamples } from "@/lib/evaluationSamples";
+import { listMyEvalQueueConversationIds } from "@/lib/evalReviewMine";
 import { POST } from "./route";
 
 const KARLA = "karla@daangnservice.com";
@@ -60,5 +85,22 @@ describe("POST /api/call-quality/samples", () => {
     const filters = { teams: ["pay-cs"], callDateStart: "2026-05-01" };
     await POST(req({ filters, limit: 9999 }));
     expect(listEvaluationSamples).toHaveBeenCalledWith(filters, 500);
+  });
+
+  it("returns empty when mineOnly queue is empty", async () => {
+    (getServerSession as any).mockResolvedValue({ user: { email: KARLA } });
+    (listMyEvalQueueConversationIds as any).mockResolvedValue([]);
+    const res = await POST(req({ filters: { mineOnly: true } }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ samples: [] });
+    expect(listEvaluationSamples).not.toHaveBeenCalled();
+  });
+
+  it("restricts samples to my eval queue when mineOnly", async () => {
+    (getServerSession as any).mockResolvedValue({ user: { email: KARLA } });
+    (listMyEvalQueueConversationIds as any).mockResolvedValue(["c9"]);
+    (listEvaluationSamples as any).mockResolvedValue([{ conversationId: "c9" }]);
+    await POST(req({ filters: { mineOnly: true } }));
+    expect(listEvaluationSamples).toHaveBeenCalledWith({ conversationIds: ["c9"] }, 100);
   });
 });

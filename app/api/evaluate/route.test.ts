@@ -12,6 +12,7 @@ import { getServerSession } from "next-auth";
 import { getConversationAudioUrl, downloadAudio } from "@/lib/genesys";
 import { evaluateFile } from "@/lib/evaluate";
 import { saveTempFile, cleanupTempFile, transcodeToWav } from "@/lib/audio";
+import { _resetEvalScheduleForTests, tryStartEvalJob } from "@/lib/evalSchedule";
 import { POST } from "./route";
 
 const KARLA = "karla@daangnservice.com";
@@ -35,6 +36,7 @@ async function readEvents(res: Response): Promise<any[]> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _resetEvalScheduleForTests();
   (getServerSession as any).mockResolvedValue({ user: { email: KARLA } });
 });
 
@@ -51,6 +53,20 @@ describe("POST /api/evaluate", () => {
 
   it("400 without conversationId", async () => {
     expect((await POST(jsonReq({}))).status).toBe(400);
+  });
+
+  it("409 when the same conversation is already evaluating", async () => {
+    tryStartEvalJob({
+      conversationId: "conv-dup",
+      purpose: "call_eval",
+      org: "growth",
+      requestedBy: "other@daangnservice.com",
+    });
+    const res = await POST(jsonReq({ conversationId: "conv-dup" }));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.conversationId).toBe("conv-dup");
+    expect(body.existingJobId).toBeTruthy();
   });
 
   it("fetches Genesys audio, transcodes, evaluates, returns result", async () => {
@@ -94,7 +110,11 @@ describe("POST /api/evaluate", () => {
     expect(last.result.analysisId).toBe("aid-1");
 
     expect(getConversationAudioUrl).toHaveBeenCalledWith("conv-1");
-    expect(evaluateFile).toHaveBeenCalledWith("/tmp/x.wav", { minSilenceSec: 4, noiseDb: -30, org: "growth" }, "/tmp/x.audio");
+    expect(evaluateFile).toHaveBeenCalledWith(
+      "/tmp/x.wav",
+      { minSilenceSec: 4, noiseDb: -30, org: "growth", conversationId: "conv-1", llmPurpose: "call_eval" },
+      "/tmp/x.audio",
+    );
     // 임시파일 2개(src, wav) 정리
     expect((cleanupTempFile as any).mock.calls.map((c: any[]) => c[0])).toEqual(["/tmp/x.audio", "/tmp/x.wav"]);
   });

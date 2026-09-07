@@ -8,6 +8,7 @@ import { evaluateFile } from "@/lib/evaluate";
 import { saveAnalysisResult } from "@/lib/analysisStore";
 import { trackServerAction } from "@/lib/serverTrack";
 import { numEnv } from "@/lib/env";
+import { finishEvalJob, tryStartEvalJob, updateEvalJob } from "@/lib/evalSchedule";
 import type { EvaluateEvent } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -41,6 +42,26 @@ export async function POST(req: Request): Promise<Response> {
   const phoneInquiryId = (body.phoneInquiryId ?? "").trim() || null;
   const analyzedBy = session.user.email;
 
+  const started = tryStartEvalJob({
+    conversationId,
+    purpose: "call_eval",
+    org,
+    requestedBy: analyzedBy,
+  });
+  if (!started.ok) {
+    return NextResponse.json(
+      {
+        error: "동일 conversation에 대한 평가가 이미 진행 중입니다.",
+        conversationId,
+        existingJobId: started.existing.jobId,
+        existingRequestedBy: started.existing.requestedBy,
+        existingStartedAt: started.existing.createdAt,
+      },
+      { status: 409 },
+    );
+  }
+  const jobId = started.job.jobId;
+
   const raw = Number(body.minSilenceSec ?? 3);
   const minSilenceSec = Math.min(10, Math.max(1, Number.isFinite(raw) ? raw : 3));
   const noiseDb = numEnv("SILENCE_NOISE_DB", -30);
@@ -62,16 +83,20 @@ export async function POST(req: Request): Promise<Response> {
       const beat = setInterval(() => send({ type: "heartbeat", elapsedMs: Date.now() - t0 }), HEARTBEAT_MS);
 
       const tempPaths: string[] = [];
+      let settled = false;
       try {
         // Genesys에서 녹취 다운로드 URL → 오디오 bytes → 임시파일 → wav 정규화
+        updateEvalJob(jobId, { step: "genesys" });
         send({ type: "progress", step: "genesys", elapsedMs: 0 });
         const url = await getConversationAudioUrl(conversationId);
         const t1 = Date.now();
 
+        updateEvalJob(jobId, { step: "download" });
         send({ type: "progress", step: "download", elapsedMs: t1 - t0 });
         const { bytes } = await downloadAudio(url);
         const t2 = Date.now();
 
+        updateEvalJob(jobId, { step: "transcode" });
         send({ type: "progress", step: "transcode", elapsedMs: t2 - t0 });
         const srcPath = await saveTempFile(bytes, ".audio");
         tempPaths.push(srcPath);
@@ -79,29 +104,51 @@ export async function POST(req: Request): Promise<Response> {
         tempPaths.push(wavPath);
         const t3 = Date.now();
 
+        updateEvalJob(jobId, { step: "analyze" });
         send({ type: "progress", step: "analyze", elapsedMs: t3 - t0 });
-        const result = await evaluateFile(wavPath, { minSilenceSec, noiseDb, org }, srcPath);
+        const result = await evaluateFile(
+          wavPath,
+          { minSilenceSec, noiseDb, org, conversationId, llmPurpose: "call_eval" },
+          srcPath,
+        );
+        updateEvalJob(jobId, { sttReused: Boolean(result.sttReused) });
         const t4 = Date.now();
         console.log(
-          `[evaluate] genesys=${t1 - t0}ms download=${t2 - t1}ms transcode=${t3 - t2}ms evaluate=${t4 - t3}ms total=${t4 - t0}ms`,
+          `[evaluate] genesys=${t1 - t0}ms download=${t2 - t1}ms transcode=${t3 - t2}ms evaluate=${t4 - t3}ms total=${t4 - t0}ms sttReused=${Boolean(result.sttReused)}`,
         );
 
         // 결과 영구 저장(이력 누적). 저장 실패해도 분석 결과는 돌려준다.
+        updateEvalJob(jobId, { step: "save" });
         send({ type: "progress", step: "save", elapsedMs: t4 - t0 });
         let analysisId: string | null = null;
         try {
-          analysisId = await saveAnalysisResult({ org, conversationId, phoneInquiryId, analyzedBy, result });
+          analysisId = await saveAnalysisResult({
+            org,
+            conversationId,
+            phoneInquiryId,
+            analyzedBy,
+            result,
+            promptVersionId: result.promptConfig?.version.versionId ?? null,
+            promptVersion: result.promptConfig?.version.versionLabel ?? null,
+            llmCallId: result.llmCallId ?? null,
+          });
         } catch (saveErr) {
           console.error("[evaluate] 결과 저장 실패", saveErr);
         }
 
         await trackServerAction("/call-quality", "call_evaluate");
+        finishEvalJob(jobId, { status: "completed" });
+        settled = true;
         send({ type: "result", result: { ...result, conversationId, analysisId: analysisId ?? undefined } });
       } catch (e) {
-        send({ type: "error", message: e instanceof Error ? e.message : "처리 중 오류" });
+        const message = e instanceof Error ? e.message : "처리 중 오류";
+        finishEvalJob(jobId, { status: "failed", error: message });
+        settled = true;
+        send({ type: "error", message });
       } finally {
         clearInterval(beat);
         for (const p of tempPaths) await cleanupTempFile(p);
+        if (!settled) finishEvalJob(jobId, { status: "failed", error: "interrupted" });
         open = false;
         try {
           controller.close();

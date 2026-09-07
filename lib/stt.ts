@@ -1,31 +1,60 @@
 import { randomUUID } from "node:crypto";
-import { SpeechClient } from "@google-cloud/speech";
-import { getStorage } from "./storage";
+import { SpeechClient, v2 } from "@google-cloud/speech";
+import type { Bucket } from "@google-cloud/storage";
+import { ensureGcsBucket, FEEDBACK_BUCKET, getStorage } from "./storage";
+import { appBq } from "./bqRefs";
+import { gcpAdcPreferredAuth } from "./gcpCredentials";
 import { transcodeToWav, cleanupTempFile } from "./audio";
+import type { SttSegment } from "./sttSpeaker";
+
+export { DEFAULT_AGENT_CHANNEL_TAG, mapSpeaker, type SttSegment } from "./sttSpeaker";
 
 // 콜 오디오를 Google Cloud Speech-to-Text로 전사한다.
-// - 긴 통화는 동기 한도(~1분)를 넘어 longRunningRecognize(GCS 입력) 사용 → 스테레오 WAV를 GCS에 잠깐 올리고 끝나면 삭제.
-// - 듀얼채널: Genesys 녹취는 상담원/고객이 좌우 채널로 분리됨 → enableSeparateRecognitionPerChannel로 채널별 인식(=화자 분리).
-// - 텍스트는 각 result의 클린 transcript, 타임스탬프는 words[0], 화자는 channelTag.
-// 인증: GOOGLE_SERVICE_ACCOUNT_JSON(서비스계정 키) 우선, 없으면 ADC. ⚠️ Cloud Speech API 활성화 + SA 권한 필요.
-const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID ?? "striped-option-493506-a7";
-const STT_BUCKET = process.env.STT_TEMP_BUCKET ?? process.env.GCS_FEEDBACK_BUCKET ?? "striped-option-493506-a7-helpdesk-x-feedback";
-const STT_MODEL = process.env.STT_MODEL ?? "latest_long"; // 한국어 정확도 좋은 최신 모델. env로 변경 가능
-const STT_LANG = process.env.STT_LANGUAGE ?? "ko-KR";
+// - 기본: v1 longRunningRecognize(GCS 입력)
+// - 선택: v2 batchRecognize + DYNAMIC_BATCHING(저비용, 고지연)
+// - 듀얼채널: Genesys 녹취는 상담원/고객이 좌우 채널로 분리됨 → 채널별 인식 사용
+// - 텍스트는 각 result의 transcript, 타임스탬프는 첫/마지막 word 기준, 화자는 channelTag.
+// 인증: ADC 우선(gcpAdcPreferredAuth). GCS 업로드만 SA JSON. ⚠️ Cloud Speech API 활성화 필요.
+const PROJECT_ID = appBq.projectId;
+const STT_BUCKET = process.env.STT_TEMP_BUCKET ?? FEEDBACK_BUCKET;
+export const STT_MODEL = process.env.STT_MODEL ?? "latest_long";
+export const STT_LANG = process.env.STT_LANGUAGE ?? "ko-KR";
+export const STT_CHANNEL_COUNT = 2;
+export const STT_API_VERSION = process.env.STT_API_VERSION ?? "v1";
+export const STT_V2_LOCATION = process.env.STT_V2_LOCATION ?? "global";
+export const STT_V2_RECOGNIZER = process.env.STT_V2_RECOGNIZER ?? "_";
+export const STT_V2_DYNAMIC_BATCH = process.env.STT_V2_DYNAMIC_BATCH !== "0";
 
-export type SttSegment = { atSec: number; endSec: number; speakerTag: number; text: string };
 export type SttRawResult = { transcript: string; startSec: number; endSec: number; speakerTag: number };
+
+export type TranscribeOutcome = {
+  segments: SttSegment[];
+  durationSec: number;
+  channelCount: number;
+  model: string;
+  language: string;
+};
 
 let _client: SpeechClient | null = null;
 function getSpeech(): SpeechClient {
   if (!_client) {
-    const saJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
     _client = new SpeechClient({
       projectId: PROJECT_ID,
-      ...(saJson ? { credentials: JSON.parse(saJson) } : {}),
+      ...gcpAdcPreferredAuth(),
     });
   }
   return _client;
+}
+
+let _clientV2: v2.SpeechClient | null = null;
+function getSpeechV2(): v2.SpeechClient {
+  if (!_clientV2) {
+    _clientV2 = new v2.SpeechClient({
+      projectId: PROJECT_ID,
+      ...gcpAdcPreferredAuth(),
+    });
+  }
+  return _clientV2;
 }
 
 function durToSec(d?: { seconds?: number | string | null; nanos?: number | null } | null): number {
@@ -33,7 +62,6 @@ function durToSec(d?: { seconds?: number | string | null; nanos?: number | null 
   return Number(d.seconds ?? 0) + Number(d.nanos ?? 0) / 1e9;
 }
 
-// STT result별 클린 transcript + 시작 시각으로 세그먼트 구성(순수 함수). 채널이 섞여 오므로 시각순 정렬.
 export function resultsToSegments(results: SttRawResult[]): SttSegment[] {
   return results
     .map((r) => ({ atSec: r.startSec, endSec: r.endSec, speakerTag: r.speakerTag, text: r.transcript.trim() }))
@@ -41,60 +69,172 @@ export function resultsToSegments(results: SttRawResult[]): SttSegment[] {
     .sort((a, b) => a.atSec - b.atSec);
 }
 
-// STT 화자 태그(=채널) → 표시 라벨. Gemini가 판별한 상담원 태그(agentTag) 기준.
-export function mapSpeaker(speakerTag: number, agentTag: number | null): string {
-  if (agentTag != null) return speakerTag === agentTag ? "상담원" : "고객";
-  return `화자 ${speakerTag}`;
+function recognizerPath(): string {
+  return `projects/${PROJECT_ID}/locations/${STT_V2_LOCATION}/recognizers/${STT_V2_RECOGNIZER}`;
 }
 
-// 소스 오디오를 스테레오 wav로 변환 → GCS 업로드 → 듀얼채널 STT. 끝나면 GCS·임시파일 삭제. 실패 시 throw(호출부 폴백).
-export async function transcribeCall(sourcePath: string): Promise<SttSegment[]> {
-  const stereoWav = await transcodeToWav(sourcePath, 2);
+async function prepareSttUpload(sourcePath: string): Promise<{
+  stereoWav: string;
+  bucket: Bucket;
+  dest: string;
+  gcsUri: string;
+}> {
+  const stereoWav = await transcodeToWav(sourcePath, STT_CHANNEL_COUNT);
   const dest = `call-stt/${randomUUID()}.wav`;
+  await ensureGcsBucket(STT_BUCKET);
   const bucket = getStorage().bucket(STT_BUCKET);
+  await bucket.upload(stereoWav, { destination: dest, resumable: false });
+  return {
+    stereoWav,
+    bucket,
+    dest,
+    gcsUri: `gs://${STT_BUCKET}/${dest}`,
+  };
+}
+
+function normalizeOutcome(results: SttRawResult[], model: string): TranscribeOutcome {
+  const segments = resultsToSegments(results);
+  const durationSec = segments.reduce((m, s) => Math.max(m, s.endSec), 0);
+  return {
+    segments,
+    durationSec,
+    channelCount: STT_CHANNEL_COUNT,
+    model,
+    language: STT_LANG,
+  };
+}
+
+async function transcribeCallV1(gcsUri: string): Promise<TranscribeOutcome> {
+  const [operation] = await getSpeech().longRunningRecognize({
+    audio: { uri: gcsUri },
+    config: {
+      encoding: "LINEAR16",
+      sampleRateHertz: 16000,
+      audioChannelCount: STT_CHANNEL_COUNT,
+      enableSeparateRecognitionPerChannel: true,
+      languageCode: STT_LANG,
+      enableWordTimeOffsets: true,
+      model: STT_MODEL,
+    },
+  });
+  const [response] = await operation.promise();
+
+  type Dur = { seconds?: number | string | null; nanos?: number | null } | null;
+  const results = (response.results ?? []) as {
+    channelTag?: number | null;
+    alternatives?: { transcript?: string | null; words?: { startTime?: Dur; endTime?: Dur }[] }[];
+  }[];
+
+  const norm: SttRawResult[] = results.map((r) => {
+    const alt = r.alternatives?.[0];
+    const words = alt?.words ?? [];
+    const first = words[0];
+    const last = words[words.length - 1];
+    return {
+      transcript: String(alt?.transcript ?? ""),
+      startSec: first ? durToSec(first.startTime) : 0,
+      endSec: last ? durToSec(last.endTime) : 0,
+      speakerTag: Number(r.channelTag ?? 0),
+    };
+  });
+  return normalizeOutcome(norm, STT_MODEL);
+}
+
+async function transcribeCallV2(gcsUri: string): Promise<TranscribeOutcome> {
+  const request = {
+    recognizer: recognizerPath(),
+    config: {
+      autoDecodingConfig: {},
+      languageCodes: [STT_LANG],
+      model: STT_MODEL,
+      features: {
+        enableWordTimeOffsets: true,
+        multiChannelMode: "SEPARATE_RECOGNITION_PER_CHANNEL",
+      },
+    },
+    files: [{ uri: gcsUri }],
+    recognitionOutputConfig: {
+      inlineResponseConfig: {},
+    },
+    ...(STT_V2_DYNAMIC_BATCH ? { processingStrategy: "DYNAMIC_BATCHING" } : {}),
+  };
+  const [operation] = await getSpeechV2().batchRecognize(request as never);
+  const [response] = await operation.promise();
+
+  const byFile = (response.results ?? {}) as Record<
+    string,
+    {
+      inlineResult?: {
+        transcript?: {
+          results?: Array<{
+            alternatives?: Array<{
+              transcript?: string | null;
+              words?: Array<{
+                startOffset?: { seconds?: number | string | null; nanos?: number | null } | null;
+                endOffset?: { seconds?: number | string | null; nanos?: number | null } | null;
+              }>;
+            }>;
+            channelTag?: number | null;
+            resultEndOffset?: { seconds?: number | string | null; nanos?: number | null } | null;
+          }>;
+        };
+      };
+      transcript?: {
+        results?: Array<{
+          alternatives?: Array<{
+            transcript?: string | null;
+            words?: Array<{
+              startOffset?: { seconds?: number | string | null; nanos?: number | null } | null;
+              endOffset?: { seconds?: number | string | null; nanos?: number | null } | null;
+            }>;
+          }>;
+          channelTag?: number | null;
+          resultEndOffset?: { seconds?: number | string | null; nanos?: number | null } | null;
+        }>;
+      };
+    }
+  >;
+  const fileResult = byFile[gcsUri];
+  const transcript = fileResult?.inlineResult?.transcript ?? fileResult?.transcript;
+  const results = transcript?.results ?? [];
+
+  const norm: SttRawResult[] = results.map((r) => {
+    const alt = r.alternatives?.[0];
+    const words = alt?.words ?? [];
+    const first = words[0];
+    const last = words[words.length - 1];
+    return {
+      transcript: String(alt?.transcript ?? ""),
+      startSec: first ? durToSec(first.startOffset) : 0,
+      endSec: last ? durToSec(last.endOffset) : durToSec(r.resultEndOffset),
+      speakerTag: Number(r.channelTag ?? 0),
+    };
+  });
+  return normalizeOutcome(norm, `${STT_MODEL} (v2${STT_V2_DYNAMIC_BATCH ? ":dynamic_batch" : ""})`);
+}
+
+/** 소스 오디오 → 스테레오 wav → GCS → 선택된 STT(v1/v2) 실행. */
+export async function transcribeCall(sourcePath: string): Promise<TranscribeOutcome> {
+  const { stereoWav, bucket, dest, gcsUri } = await prepareSttUpload(sourcePath);
 
   try {
-    await bucket.upload(stereoWav, { destination: dest, resumable: false });
-    const gcsUri = `gs://${STT_BUCKET}/${dest}`;
-
-    const [operation] = await getSpeech().longRunningRecognize({
-      audio: { uri: gcsUri },
-      config: {
-        encoding: "LINEAR16",
-        sampleRateHertz: 16000,
-        audioChannelCount: 2,
-        enableSeparateRecognitionPerChannel: true, // 채널별 인식 = 상담원/고객 분리
-        languageCode: STT_LANG,
-        enableWordTimeOffsets: true,
-        model: STT_MODEL,
-      },
-    });
-    const [response] = await operation.promise();
-
-    type Dur = { seconds?: number | string | null; nanos?: number | null } | null;
-    const results = (response.results ?? []) as {
-      channelTag?: number | null;
-      alternatives?: { transcript?: string | null; words?: { startTime?: Dur; endTime?: Dur }[] }[];
-    }[];
-
-    const norm: SttRawResult[] = results.map((r) => {
-      const alt = r.alternatives?.[0];
-      const words = alt?.words ?? [];
-      const first = words[0];
-      const last = words[words.length - 1];
-      return {
-        transcript: String(alt?.transcript ?? ""),
-        startSec: first ? durToSec(first.startTime) : 0,
-        endSec: last ? durToSec(last.endTime) : 0,
-        speakerTag: Number(r.channelTag ?? 0), // 채널 = 화자
-      };
-    });
-    return resultsToSegments(norm);
+    if (STT_API_VERSION === "v2_dynamic_batch" || STT_API_VERSION === "v2") {
+      return await transcribeCallV2(gcsUri);
+    }
+    return await transcribeCallV1(gcsUri);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/bucket does not exist/i.test(msg)) {
+      throw new Error(
+        `${msg} (STT 버킷: ${STT_BUCKET}. .env에 STT_TEMP_BUCKET 또는 GCS_FEEDBACK_BUCKET으로 기존 버킷을 지정하거나, 해당 프로젝트에 버킷 생성 권한이 필요합니다.)`,
+      );
+    }
+    throw e;
   } finally {
     await bucket
       .file(dest)
       .delete()
-      .catch(() => {}); // 처리 후 즉시 삭제(영구 저장 X)
+      .catch(() => {});
     await cleanupTempFile(stereoWav);
   }
 }

@@ -1,0 +1,140 @@
+/* SEED · 당근 레이아웃 (기본·전용) */
+
+.app-shell {
+  background: var(--bg-subtle);
+}
+
+.app-shell__main {
+  background: var(--bg-subtle);
+  color: var(--fg-primary);
+}
+
+.seed-sidebar {
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+}
+
+/*
+ * Tailwind 유틸(--color-*) + QMS 시맨틱 토큰을
+ * SEED role / 당근 팔레트에 맞춰 내부·사이드 패널까지 일관되게.
+ */
+:root,
+html[data-ui-layout="seed"] {
+  /* QMS semantic → SEED roles (있을 때) */
+  --bg-canvas: var(--seed-color-bg-layer-default, var(--c-gray-00));
+  --bg-subtle: var(--c-gray-50);
+  --bg-muted: var(--seed-color-bg-layer-fill, var(--c-gray-100));
+  --bg-sunken: var(--seed-color-bg-neutral-weak, var(--c-gray-200));
+  --fg-primary: var(--seed-color-fg-neutral, var(--c-gray-900));
+  --fg-secondary: var(--seed-color-fg-neutral-muted, var(--c-gray-600));
+  --fg-tertiary: var(--seed-color-fg-neutral-subtle, var(--c-gray-500));
+  --border-subtle: var(--seed-color-stroke-neutral-muted, var(--c-gray-200));
+  --border-default: var(--seed-color-stroke-neutral-weak, var(--c-gray-300));
+  --brand: var(--seed-color-bg-brand-solid, var(--c-carrot-500));
+  --brand-hover: var(--seed-color-bg-brand-solid-pressed, var(--c-carrot-600));
+  --brand-subtle: var(--seed-color-bg-brand-weak, var(--c-carrot-50));
+  --brand-fg: var(--seed-color-fg-brand, var(--c-carrot-600));
+  --bg-inverse: var(--seed-color-bg-neutral-inverted, var(--c-gray-900));
+  --accent: var(--seed-color-fg-positive, var(--c-green-500));
+  --accent-subtle: var(--seed-color-bg-positive-weak, var(--c-green-50));
+  --accent-fg: var(--seed-color-fg-positive, var(--c-green-600));
+  --success: var(--seed-color-fg-positive, var(--c-green-500));
+  --success-subtle: var(--seed-color-bg-positive-weak, var(--c-green-50));
+  --info: var(--seed-color-fg-informative, var(--c-blue-500));
+  --info-subtle: var(--seed-color-bg-informative-weak, var(--c-blue-50));
+  --warning: var(--seed-color-fg-warning, var(--c-amber-500));
+  --warning-subtle: var(--seed-color-bg-warning-weak, var(--c-amber-50));
+  --danger: var(--seed-color-fg-critical, var(--c-red-500));
+  --danger-subtle: var(--seed-color-bg-critical-weak, var(--c-red-50));
+  --radius-md: var(--seed-radius-r2, 10px);
+  --radius-lg: var(--seed-radius-r3, 14px);
+  --radius-xl: var(--seed-radius-r4, 18px);
+
+  /* Legacy navy accent → brand */
+  --color-navy: var(--brand);
+  --color-navy-hover: var(--brand-hover);
+  --color-surface: var(--bg-subtle);
+  --color-brand: var(--brand);
+
+  /* gray / white utilities used by lists, filters, drawers */
+  --color-white: var(--bg-canvas);
+  --color-gray-50: var(--c-gray-50);
+  --color-gray-100: var(--c-gray-100);
+  --color-gray-200: var(--c-gray-200);
+  --color-gray-300: var(--c-gray-300);
+  --color-gray-400: var(--c-gray-400);
+  --color-gray-500: var(--c-gray-500);
+  --color-gray-600: var(--c-gray-600);
+  --color-gray-700: var(--c-gray-700);
+  --color-gray-800: var(--c-gray-800);
+  --color-gray-900: var(--c-gray-900);
+
+  --color-red-50: var(--danger-subtle);
+  --color-red-200: color-mix(in srgb, var(--danger) 28%, white);
+  --color-red-700: var(--danger);
+  --color-green-50: var(--success-subtle);
+  --color-green-700: var(--success);
+  --color-amber-50: var(--warning-subtle);
+  --color-amber-200: color-mix(in srgb, var(--warning) 28%, white);
+  --color-amber-800: var(--warning);
+}
+
+body {
+  color: var(--fg-primary);
+  background: var(--bg-subtle);
+}
+
+/* 내부 카드·사이드 패널 표면 */
+.qms-page {
+  background: var(--bg-subtle);
+  color: var(--fg-primary);
+}
+
+.qms-card,
+.qms-run-panel {
+  background: var(--bg-canvas);
+  border-color: var(--border-subtle);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--fg-primary) 4%, transparent);
+}
+
+.qms-btn-primary {
+  background: var(--brand);
+}
+.qms-btn-primary:hover {
+  background: var(--brand-hover);
+}
+
+.qms-btn-ghost {
+  border-color: var(--border-subtle);
+  background: var(--bg-canvas);
+  color: var(--fg-secondary);
+}
+.qms-btn-ghost:hover {
+  background: var(--bg-muted);
+  color: var(--fg-primary);
+}
+
+.qms-input,
+.qms-textarea,
+.qms-select {
+  border-color: var(--border-default);
+  background: var(--bg-canvas);
+  color: var(--fg-primary);
+}
+.qms-input:focus,
+.qms-textarea:focus,
+.qms-select:focus {
+  outline: 2px solid color-mix(in srgb, var(--brand) 45%, transparent);
+  outline-offset: 1px;
+  border-color: var(--brand);
+}
+
+.qms-table th {
+  color: var(--fg-tertiary);
+}
+.qms-table tr.qms-row-active {
+  background: var(--brand-subtle);
+}
+.qms-table tbody tr:hover {
+  background: var(--bg-muted);
+}

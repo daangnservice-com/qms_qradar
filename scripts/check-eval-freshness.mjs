@@ -1,5 +1,8 @@
 // 콜 분석 샘플 소스 테이블의 적재 현황 점검(읽기 전용 SELECT만).
 //
+// 대상 프로젝트/테이블 기본값은 앱의 lib/bqRefs.ts(growthBq)와 동일한 env·기본값을 쓴다.
+// (이 스크립트는 plain .mjs라 bqRefs를 import하지 않고 env를 직접 읽는다.)
+//
 // "특정 날짜 데이터가 앱에서 안 보인다"의 원인을 아래 3가지로 가른다.
 //   1) 적재 지연        — 그 날짜 행이 테이블에 아직 없음(DA 파이프라인)
 //   2) CID null        — 행은 있는데 genesys_conversation_id 미매핑 → 앱의 is not null 조건에 전멸
