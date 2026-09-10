@@ -56,6 +56,7 @@ export async function listRecentAnalyzedConversationIds(org: CallQualityOrg, lim
 export async function listEvalFlagsByConversationIds(
   org: CallQualityOrg,
   conversationIds: string[],
+  opts?: { liveHuman?: boolean },
 ): Promise<
   Map<
     string,
@@ -67,7 +68,7 @@ export async function listEvalFlagsByConversationIds(
     }
   >
 > {
-  return listEvalFlags(org, conversationIds);
+  return listEvalFlags(org, conversationIds, opts);
 }
 
 export async function listRecentConversationIdsByReview(

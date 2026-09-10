@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -H 0.0.0.0",
+    "logs": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-logs.ps1",
     "build": "next build",
     "start": "next start -H 0.0.0.0",
     "lint": "next lint",
@@ -27,6 +28,7 @@
     "@seed-design/react": "^2.1.0",
     "@vercel/analytics": "^2.0.1",
     "ffmpeg-static": "^5.2.0",
+    "google-auth-library": "^9.15.1",
     "lucide-react": "^0.469.0",
     "next": "^15.1.6",
     "next-auth": "^4.24.14",

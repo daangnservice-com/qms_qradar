@@ -2,20 +2,19 @@ import { NextResponse } from "next/server";
 import { requireEvalOps } from "@/lib/evalOpsAuth";
 import { getLocalSttHealth, localSttBaseUrl, localSttConfigured } from "@/lib/localSttClient";
 import { targetCallDate } from "@/lib/sttBatchRunner";
-import { startSttBatchScheduler, tickDueSttBatchSchedules } from "@/lib/sttBatchScheduler";
+import { tickDueSttBatchSchedules } from "@/lib/sttBatchScheduler";
 import {
   jobsForRun,
   latestRunForSchedule,
   listSttBatchState,
   summarizeAgents,
+  summarizeScheduleStats,
   upsertSttBatchSchedule,
 } from "@/lib/sttBatchStore";
 import type { SttBatchScheduleInput } from "@/lib/sttBatchTypes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-startSttBatchScheduler();
 
 function parseBody(raw: unknown): SttBatchScheduleInput & { id?: string } {
   const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
@@ -53,6 +52,7 @@ export async function GET(req: Request) {
     state.schedules.find((s) => s.id === scheduleId) ?? state.schedules[0] ?? null;
   const latestRun = selected ? latestRunForSchedule(state.runs, selected.id) : null;
   const jobs = latestRun ? jobsForRun(state.jobs, latestRun.id) : [];
+  const stats = selected ? summarizeScheduleStats(state.jobs, selected.id) : null;
   const health = await getLocalSttHealth();
 
   return NextResponse.json({
@@ -62,6 +62,7 @@ export async function GET(req: Request) {
     latestRun,
     jobs,
     agents: selected ? summarizeAgents(jobs, selected.perAgentCount) : [],
+    stats,
     targetCallDate: selected ? targetCallDate(selected) : null,
     health: {
       configured: localSttConfigured(),

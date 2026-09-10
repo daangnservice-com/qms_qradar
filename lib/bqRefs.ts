@@ -97,6 +97,8 @@ export const promptBq = {
     criterionPrompts: qradarTable("llm_criterion_prompts"),
     fieldConfig: qradarTable("llm_prompt_field_config"),
     highRiskFlagRules: qradarTable("high_risk_flag_rules"),
+    /** 장콜 상위 N% 임계분(직전 7일 MA) 스냅샷 */
+    longCallThresholds: qradarTable("long_call_thresholds"),
   },
   fq: (table: string) => fq(PROJECT, QRADAR_DATASET, table),
   sql: (table: string) => sqlFq(PROJECT, QRADAR_DATASET, table),
@@ -206,6 +208,30 @@ export const feedbackBq = {
 } as const;
 
 /**
+ * CSAT(고객 설문) 원천. 전화 문의는 inquiry_type='PhoneInquiry' + inquiry_id = 상담이력 ID로 매핑.
+ * 중복 응답이 섞여 있어 항상 dup_no = 1만 쓴다.
+ * choices 테이블은 choice_* 컬럼의 한글 라벨 사전(거의 바뀌지 않음).
+ */
+const CSAT_RAWLOG_VIEW = env(
+  "CSAT_RAWLOG_VIEW",
+  "team_operation.vw_feedback_chat_CSAT_rawlog_verbose",
+);
+const CSAT_CHOICES_TABLE = env(
+  "CSAT_CHOICES_TABLE",
+  "team_operation.utility_inquiry_ratings_choices",
+);
+const CSAT_PROJECT = env("CSAT_PROJECT", KARROT_CS_PROJECT);
+
+export const csatBq = {
+  projectId: CSAT_PROJECT,
+  location: envOpt("CSAT_LOCATION") ?? "US",
+  rawlogView: CSAT_RAWLOG_VIEW,
+  choicesTable: CSAT_CHOICES_TABLE,
+  rawlogSql: () => `\`${CSAT_PROJECT}.${CSAT_RAWLOG_VIEW}\``,
+  choicesSql: () => `\`${CSAT_PROJECT}.${CSAT_CHOICES_TABLE}\``,
+} as const;
+
+/**
  * 배분 시뮬레이터(GAS qa_distribution) Sheets → qradar 적재 테이블.
  * 소스 스프레드시트: docs.google.com/spreadsheets/d/1zVtfyduiNpZ0Ro3ZLiDRw4662IxXOufDESFrTHvyAxw
  */
@@ -260,6 +286,8 @@ export const QRADAR_WRITABLE_TABLES = {
   llmPromptProdHistory: promptBq.tables.prodHistory,
   llmCriterionPrompts: promptBq.tables.criterionPrompts,
   llmPromptFieldConfig: promptBq.tables.fieldConfig,
+  highRiskFlagRules: promptBq.tables.highRiskFlagRules,
+  longCallThresholds: promptBq.tables.longCallThresholds,
   evaluationResults: growthBq.resultsTable,
   /** @deprecated */
   evaluationResultsPay: growthBq.resultsTable,

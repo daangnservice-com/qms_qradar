@@ -12,8 +12,8 @@ import {
 } from "@/lib/reviewStatusCheckout";
 import {
   displayReviewNeededLabel,
-  hotColdLabel,
-  hotColdTone,
+  finalJudgmentLabel,
+  finalJudgmentTone,
   isReviewNeededRaw,
   reviewNeededTone,
 } from "@/lib/judgmentUi";
@@ -103,10 +103,10 @@ function FinalBadge({ label }: { label?: string }) {
   const n = String(label ?? "")
     .trim()
     .toLowerCase();
-  if (n !== "cold" && n !== "hot") return <span className="text-[var(--fg-tertiary)]">—</span>;
+  if (n !== "cold" && n !== "hot" && n !== "hold") return <span className="text-[var(--fg-tertiary)]">—</span>;
   return (
-    <Badge size="medium" variant="weak" tone={hotColdTone(n)}>
-      {hotColdLabel(n)}
+    <Badge size="medium" variant="weak" tone={finalJudgmentTone(n)}>
+      {finalJudgmentLabel(n)}
     </Badge>
   );
 }

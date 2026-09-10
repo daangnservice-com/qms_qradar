@@ -1,27 +1,21 @@
 import { describe, it, expect } from "vitest";
-import {
-  canAccessCallQualityObserve,
-  canAccessCallQualityPlayback,
-  canAccessOrg,
-} from "./callQualityOrg";
+import { ORG_LABEL, orgFromParam } from "./callQualityOrg";
 
-describe("callQualityOrg observe access", () => {
-  it("allows any @daangnservice.com user for observe", () => {
-    expect(canAccessCallQualityObserve("anyone@daangnservice.com")).toBe(true);
-    expect(canAccessCallQualityObserve("Anyone@DaangnService.com")).toBe(true);
+// 권한 판정은 이 모듈에 없다 — sessionAccess.test.ts / resolveAccess.test.ts 참고.
+describe("orgFromParam", () => {
+  it("pay만 pay로, 나머지는 growth로 떨어진다", () => {
+    expect(orgFromParam("pay")).toBe("pay");
+    expect(orgFromParam("growth")).toBe("growth");
+    expect(orgFromParam("")).toBe("growth");
+    expect(orgFromParam(undefined)).toBe("growth");
+    expect(orgFromParam(null)).toBe("growth");
+    expect(orgFromParam("PAY")).toBe("growth"); // 대소문자 구분
   });
+});
 
-  it("denies other domains for observe-only access", () => {
-    expect(canAccessCallQualityObserve("user@daangn.com")).toBe(false);
-    expect(canAccessCallQualityObserve(null)).toBe(false);
-  });
-
-  it("still allows call quality whitelist for observe", () => {
-    expect(canAccessCallQualityObserve("karla@daangnservice.com")).toBe(true);
-  });
-
-  it("extends playback API to observe domain users", () => {
-    expect(canAccessCallQualityPlayback("growth", "member@daangnservice.com")).toBe(true);
-    expect(canAccessOrg("growth", "member@daangnservice.com")).toBe(false);
+describe("ORG_LABEL", () => {
+  it("두 조직 라벨을 모두 가진다", () => {
+    expect(ORG_LABEL.growth).toBe("성장문화실");
+    expect(ORG_LABEL.pay).toBe("페이팀");
   });
 });

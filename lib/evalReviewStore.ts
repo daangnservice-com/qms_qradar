@@ -267,6 +267,10 @@ export async function listRecentEvalReviews(limit = 2000): Promise<EvalReviewAnn
   }
 }
 
+export function conversationReviewAnnotationId(conversationId: string, criterionId: number): string {
+  return `conversation:${conversationId}:${criterionId}`;
+}
+
 export async function saveEvalReview(
   input: Omit<EvalReviewAnnotation, "annotationId" | "updatedAt"> & { annotationId?: string },
 ): Promise<EvalReviewAnnotation> {
@@ -281,10 +285,16 @@ export async function saveEvalReview(
       : (normalizeReviewNeeded(input.reviewNeeded) ?? (input.source === "human" ? true : null));
   const scope: CriterionReviewScope = parseCriterionReviewScope(input.scope);
   const criterionId = judgment === "best" ? 0 : Number(input.criterionId) || 0;
+  const conversationAnnotationId =
+    criterionId > 0 ? conversationReviewAnnotationId(input.conversationId, criterionId) : "";
+  // occurrence 저장 시 conversation:* id를 재쓰면 스코프가 꼬이므로 새로 발급
+  const rawAnnotationId = input.annotationId?.trim() || "";
   const annotationId =
     scope === "conversation" && criterionId > 0
-      ? `conversation:${input.conversationId}:${criterionId}`
-      : input.annotationId?.trim() || randomUUID();
+      ? conversationAnnotationId
+      : rawAnnotationId.startsWith("conversation:")
+        ? randomUUID()
+        : rawAnnotationId || randomUUID();
   const row: EvalReviewAnnotation = {
     annotationId,
     conversationId: input.conversationId,
@@ -318,6 +328,38 @@ export async function saveEvalReview(
     ],
     { skipInvalidRows: true, ignoreUnknownValues: true },
   );
+
+  // 동일 평가항목 일괄(conversation) ↔ 발화별(occurrence) 전환 시 서로 덮어쓰지 않도록 정리
+  if (criterionId > 0 && judgment !== "best") {
+    try {
+      const existing = await listEvalReviews(input.conversationId);
+      const toDelete: string[] = [];
+      for (const r of existing) {
+        if (r.criterionId !== criterionId) continue;
+        if (r.annotationId === annotationId) continue;
+        if (scope === "conversation") {
+          // 일괄 저장 → 같은 항목의 발화별 검수는 무효
+          if (r.scope !== "conversation") toDelete.push(r.annotationId);
+        } else if (r.annotationId === conversationAnnotationId || r.scope === "conversation") {
+          // 발화별 저장 → 일괄 검수 해제
+          toDelete.push(r.annotationId);
+        }
+      }
+      for (const id of toDelete) {
+        await deleteEvalReview({
+          annotationId: id,
+          conversationId: input.conversationId,
+          updatedBy: input.updatedBy,
+        });
+      }
+    } catch (e) {
+      console.warn(
+        "[evalReviewStore] scope cleanup fallback:",
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+
   return row;
 }
 

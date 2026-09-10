@@ -2,7 +2,7 @@ import { CS_CHECKLIST } from "./csChecklist";
 import type { CallQualityOrg } from "./callQualityOrg";
 import { resolveCriterionLabelMap } from "./criterionStore";
 import { listCaseMetaByConversationIds } from "./evaluationSamples";
-import { checklistFromEvalPayload, deriveHumanReviewNeededIds, deriveHumanViolatedIds } from "./humanResultDerive";
+import { checklistFromEvalPayload, deriveHumanReviewNeededIds, deriveHumanResultLabel } from "./humanResultDerive";
 import { listReviewedCallEvalResults, type EvalResultRow } from "./evalResultStore";
 import { listEvalReviewsByConversationIds, type EvalReviewAnnotation } from "./evalReviewStore";
 import { getProductionPrompt, listPromptVersions } from "./promptStore";
@@ -245,7 +245,6 @@ async function buildDashboard(
     const reviews = reviewsByConv.get(r.conversationId) ?? [];
     const aiReviewNeededCount = checklist.filter((c) => c.violated).length;
     const humanReviewNeededCount = deriveHumanReviewNeededIds(checklist, reviews).size;
-    const humanFinalColdCount = deriveHumanViolatedIds(checklist, reviews).size;
     const meta = caseMeta.get(r.conversationId);
     return {
       conversationId: r.conversationId,
@@ -254,7 +253,7 @@ async function buildDashboard(
       callDate: meta?.callDate ?? "",
       aiLabel: r.aiLabel,
       humanResult: r.humanResult,
-      humanFinalLabel: r.humanFinalLabel || (humanFinalColdCount ? "cold" : "hot"),
+      humanFinalLabel: r.humanFinalLabel || deriveHumanResultLabel(checklist, reviews),
       match: r.match,
       reviewCompletedAt: r.reviewCompletedAt,
       reviewCompletedBy: r.reviewCompletedBy,

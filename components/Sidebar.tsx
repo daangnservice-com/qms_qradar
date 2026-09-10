@@ -36,7 +36,11 @@ import {
   AudioLines,
   type LucideIcon,
 } from "lucide-react";
-import { isAdmin, canAccessCallQuality, canAccessAnyCallQuality, canAccessEvalOps, canAccessEvalOpsFull } from "@/lib/adminEmails";
+import { isAdmin, canAccessEvalOps, canAccessEvalOpsFull } from "@/lib/adminEmails";
+import {
+  sessionCanAccessAnyCallQuality,
+  sessionCanAccessCallQuality,
+} from "@/lib/sessionAccess";
 import { isCallQualityObserveMode } from "@/lib/callQualityDeepLink";
 
 type NavItem = {
@@ -67,7 +71,7 @@ export default function Sidebar() {
   const { data: session } = useSession();
   const email = session?.user?.email;
   const admin = isAdmin(email);
-  const cq = canAccessAnyCallQuality(email);
+  const cq = sessionCanAccessAnyCallQuality(session);
   const evalOps = canAccessEvalOps(email);
   const evalOpsFull = canAccessEvalOpsFull(email);
   const hideForObserve =
@@ -100,7 +104,7 @@ export default function Sidebar() {
   };
 
   const toolItems: NavItem[] = [
-    ...(canAccessCallQuality(email)
+    ...(sessionCanAccessCallQuality(session)
       ? [
           {
             label: "전체 평가",
@@ -138,7 +142,7 @@ export default function Sidebar() {
             : []),
         ]
       : []),
-    ...(canAccessCallQuality(email)
+    ...(sessionCanAccessCallQuality(session)
       ? [{ label: "검수 현황", href: "/eval-ops/review-status", icon: ListChecks }]
       : []),
   ];
@@ -299,7 +303,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`${collapsed ? "w-[72px]" : "w-[248px]"} seed-sidebar flex shrink-0 flex-col transition-[width] duration-200`}
+      className={`${collapsed ? "w-[72px]" : "w-[248px]"} seed-sidebar sticky top-0 flex h-dvh max-h-dvh shrink-0 flex-col self-start overflow-hidden transition-[width] duration-200`}
     >
       <div className="flex h-[64px] items-center gap-2.5 px-4">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[var(--brand)] text-white">
@@ -323,7 +327,7 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <nav className="flex flex-1 flex-col gap-3 overflow-y-auto px-3 py-2">
+      <nav className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-2">
         {groups.map((g) => (
           <div key={g.label}>
             {!collapsed && (

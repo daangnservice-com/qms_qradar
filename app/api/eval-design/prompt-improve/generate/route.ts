@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { canAccessAnyCallQuality } from "@/lib/adminEmails";
+import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
 import { generateImprovedCriterionPrompt } from "@/lib/promptImprove";
 import type { PromptImproveExample } from "@/lib/promptImproveTypes";
 
@@ -10,7 +10,7 @@ export const maxDuration = 120;
 
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!canAccessAnyCallQuality(session?.user?.email)) {
+  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   try {

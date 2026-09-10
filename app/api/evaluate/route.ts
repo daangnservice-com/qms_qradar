@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { orgFromParam, canAccessOrg } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessOrg } from "@/lib/sessionAccessServer";
+import { orgFromParam } from "@/lib/callQualityOrg";
 import { saveTempFile, cleanupTempFile, transcodeToWav } from "@/lib/audio";
 import { getConversationAudioUrl, downloadAudio } from "@/lib/genesys";
 import { evaluateFile } from "@/lib/evaluate";
@@ -35,7 +36,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const org = orgFromParam(body.org);
-  if (!canAccessOrg(org, session.user.email)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!await ensureSessionCanAccessOrg(org, session)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const conversationId = (body.conversationId ?? "").trim();
   if (!conversationId) return NextResponse.json({ error: "conversationId가 필요합니다." }, { status: 400 });

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   annotationFinalCold,
+  annotationFinalHold,
+  annotationFinalJudgment,
   annotationReviewNeeded,
   inferLegacyReviewNeeded,
   needsLegacyReviewNeededBackfill,
@@ -60,5 +62,21 @@ describe("annotationFinalCold", () => {
   it("keeps Cold as final Cold", () => {
     expect(annotationFinalCold({ judgment: "cold" })).toBe(true);
     expect(annotationFinalCold({ judgment: "cold", reviewNeeded: true })).toBe(true);
+  });
+
+  it("does not treat Hold as final Cold", () => {
+    expect(annotationFinalCold({ judgment: "hold", reviewNeeded: true })).toBe(false);
+  });
+});
+
+describe("annotationFinalHold / annotationFinalJudgment", () => {
+  it("marks Hold when review is needed", () => {
+    expect(annotationFinalHold({ judgment: "hold", reviewNeeded: true })).toBe(true);
+    expect(annotationFinalJudgment({ judgment: "hold", reviewNeeded: true })).toBe("hold");
+  });
+
+  it("ignores Hold when over-detected", () => {
+    expect(annotationFinalHold({ judgment: "hold", reviewNeeded: false })).toBe(false);
+    expect(annotationFinalJudgment({ judgment: "hold", reviewNeeded: false })).toBeNull();
   });
 });

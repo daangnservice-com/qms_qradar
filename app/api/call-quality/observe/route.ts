@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { orgFromParam, canAccessCallQualityObserve } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessCallQualityObserve } from "@/lib/sessionAccessServer";
+import { orgFromParam } from "@/lib/callQualityOrg";
 import { parseCallQualityDeepLink } from "@/lib/callQualityDeepLink";
 import { resolveObserveTarget } from "@/lib/observeResolve";
 import { tryStartEvalJob, finishEvalJob, updateEvalJob } from "@/lib/evalSchedule";
@@ -50,7 +51,7 @@ export async function GET(req: Request): Promise<Response> {
   if (!session?.user?.email) return new Response("Unauthorized", { status: 401 });
 
   const url = new URL(req.url);
-  if (!canAccessCallQualityObserve(session.user.email)) return new Response("Forbidden", { status: 403 });
+  if (!await ensureSessionCanAccessCallQualityObserve(session)) return new Response("Forbidden", { status: 403 });
 
   const deep = parseCallQualityDeepLink(url.searchParams);
   const resolved = await resolveObserveFromInput({
@@ -99,7 +100,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const org = orgFromParam(body.org);
-  if (!canAccessCallQualityObserve(session.user.email)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!await ensureSessionCanAccessCallQualityObserve(session)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const resolved = await resolveObserveFromInput({
     conversationId: String(body.conversationId ?? "").trim() || undefined,

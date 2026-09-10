@@ -9,11 +9,11 @@ import { deriveEvalLabel } from "@/lib/resultParse";
 import { maskPII } from "@/lib/pii";
 import type { ChecklistEvidence, ChecklistResult, EvaluationResult } from "@/lib/types";
 import type { EvalReviewAnnotation } from "@/lib/evalReviewTypes";
-import { annotationFinalCold, annotationReviewNeeded } from "@/lib/evalReviewTypes";
+import { annotationFinalJudgment, annotationReviewNeeded } from "@/lib/evalReviewTypes";
 import {
   displayReviewNeededLabel,
-  hotColdLabel,
-  hotColdTone,
+  finalJudgmentLabel,
+  finalJudgmentTone,
   isReviewNeededRaw,
   reviewNeededLabel,
   reviewNeededTone,
@@ -211,12 +211,14 @@ export default function EvalCaseDetail({
                 className={`font-bold ${
                   humanFinalLabel?.toLowerCase() === "cold"
                     ? "text-[var(--info)]"
-                    : humanFinalLabel?.toLowerCase() === "hot"
-                      ? "text-[var(--c-carrot-500)]"
-                      : ""
+                    : humanFinalLabel?.toLowerCase() === "hold"
+                      ? "text-[var(--fg-tertiary)]"
+                      : humanFinalLabel?.toLowerCase() === "hot"
+                        ? "text-[var(--c-carrot-500)]"
+                        : ""
                 }`}
               >
-                {humanFinalLabel ? hotColdLabel(humanFinalLabel.toLowerCase() === "cold" ? "cold" : "hot") : "—"}
+                {humanFinalLabel ? finalJudgmentLabel(humanFinalLabel) : "—"}
               </div>
             </div>
             <div className="rounded-[var(--radius-md)] bg-[var(--bg-muted)] p-2">
@@ -280,6 +282,7 @@ export default function EvalCaseDetail({
                   const evidence = res.evidence ?? [];
                   const aiNeeded = res.violated;
                   const humanReview = humanById.get(id);
+                  const humanFinal = humanReview ? annotationFinalJudgment(humanReview) : null;
                   return (
                     <Fragment key={id}>
                       <tr
@@ -312,13 +315,9 @@ export default function EvalCaseDetail({
                               >
                                 {reviewNeededLabel(annotationReviewNeeded(humanReview))}
                               </Badge>
-                              {annotationReviewNeeded(humanReview) ? (
-                                <Badge
-                                  size="medium"
-                                  variant="solid"
-                                  tone={hotColdTone(annotationFinalCold(humanReview) ? "cold" : "hot")}
-                                >
-                                  {hotColdLabel(annotationFinalCold(humanReview) ? "cold" : "hot")}
+                              {humanFinal ? (
+                                <Badge size="medium" variant="solid" tone={finalJudgmentTone(humanFinal)}>
+                                  {finalJudgmentLabel(humanFinal)}
                                 </Badge>
                               ) : null}
                             </span>

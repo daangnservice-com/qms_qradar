@@ -6,22 +6,28 @@ vi.mock("./evalResultStore", () => ({
 }));
 vi.mock("./sttBatchStore", () => ({
   listBatchTranscriptConversationIds: vi.fn(),
+  listBatchTranscriptPresenceByConversationIds: vi.fn(),
 }));
 
 import { listStoredSttPresenceByConversationIds, listRecentConversationIdsWithStoredStt } from "./evalResultStore";
-import { listBatchTranscriptConversationIds } from "./sttBatchStore";
+import {
+  listBatchTranscriptConversationIds,
+  listBatchTranscriptPresenceByConversationIds,
+} from "./sttBatchStore";
 import { listSttPresenceByConversationIds, listRecentConversationIdsWithStt } from "./sttPresence";
 
 beforeEach(() => vi.clearAllMocks());
 
 describe("listSttPresenceByConversationIds", () => {
-  it("prefers stored STT over batch", async () => {
+  it("prefers stored STT over batch and only probes given ids", async () => {
     (listStoredSttPresenceByConversationIds as any).mockResolvedValue(
       new Map([["c1", { hasStt: true, sttSource: "gcp" }]]),
     );
-    (listBatchTranscriptConversationIds as any).mockResolvedValue(new Set(["c1", "c2"]));
+    (listBatchTranscriptPresenceByConversationIds as any).mockResolvedValue(new Set(["c2"]));
 
     const out = await listSttPresenceByConversationIds(["c1", "c2", "c3"]);
+    expect(listBatchTranscriptPresenceByConversationIds).toHaveBeenCalledWith(["c1", "c2", "c3"]);
+    expect(listBatchTranscriptConversationIds).not.toHaveBeenCalled();
     expect(out.get("c1")).toEqual({ hasStt: true, sttSource: "gcp" });
     expect(out.get("c2")).toEqual({ hasStt: true, sttSource: "local" });
     expect(out.get("c3")).toEqual({ hasStt: false, sttSource: null });

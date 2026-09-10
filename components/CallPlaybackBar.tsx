@@ -15,8 +15,8 @@ import { ArrowUpToLine, GripVertical, Pause, Play } from "lucide-react";
 import { Badge } from "@seed-design/react";
 import { formatClock } from "@/lib/format";
 import {
-  hotColdLabel,
-  hotColdTone,
+  finalJudgmentLabel,
+  finalJudgmentTone,
   hotColdTrackColor,
   SOURCE_AI_TONE,
   SOURCE_HUMAN_TONE,
@@ -33,7 +33,7 @@ export type PlaybackMarker = {
   key: string;
   atSec: number;
   /** cold / hot / best 재생바 색 */
-  tone: "cold" | "hot" | "best";
+  tone: "cold" | "hot" | "best" | "hold";
   /** 접근성/폴백용 한 줄 텍스트 */
   tip: string;
   /** 툴팁 패널용 */
@@ -98,7 +98,11 @@ function MarkerTipPanel({ tip }: { tip: MarkerHoverTip }) {
       ? null
       : tip.tone === "best"
         ? ("warning" as const)
-        : hotColdTone(tip.tone === "cold" ? "cold" : "hot");
+        : tip.source === "ai"
+          ? tip.tone === "cold"
+            ? finalJudgmentTone("cold")
+            : finalJudgmentTone("hot")
+          : finalJudgmentTone(tip.tone === "hold" ? "hold" : tip.tone === "cold" ? "cold" : "hot");
   const judgmentLabel =
     tip.tone == null
       ? null
@@ -108,7 +112,7 @@ function MarkerTipPanel({ tip }: { tip: MarkerHoverTip }) {
           ? tip.tone === "cold"
             ? "검토 필요"
             : "검토 불필요"
-          : hotColdLabel(tip.tone === "cold" ? "cold" : "hot");
+          : finalJudgmentLabel(tip.tone === "hold" ? "hold" : tip.tone === "cold" ? "cold" : "hot");
 
   return createPortal(
     <div

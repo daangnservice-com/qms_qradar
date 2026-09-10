@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { canAccessAnyCallQuality } from "@/lib/adminEmails";
+import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
 import { evaluateFile } from "@/lib/evaluate";
 import { ensureLocalQaAudio, removeLocalQaAudio, cleanupPaths } from "@/lib/qaAudio";
 import { saveQaEvalResult, listQaReferenceSamples } from "@/lib/qaStore";
@@ -27,7 +27,7 @@ type Body = {
 export async function POST(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (!canAccessAnyCallQuality(email)) {
+  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
 

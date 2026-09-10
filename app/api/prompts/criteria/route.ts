@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { canAccessAnyCallQuality } from "@/lib/adminEmails";
+import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
 import {
   listSourceCriteria,
   listCriterionPrompts,
@@ -22,7 +22,7 @@ export const maxDuration = 60;
 async function requireAccess() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (!canAccessAnyCallQuality(email)) {
+  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
     return { error: NextResponse.json({ error: "권한이 없습니다" }, { status: 403 }) };
   }
   return { email: email! };

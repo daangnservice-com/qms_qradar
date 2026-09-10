@@ -1,5 +1,8 @@
 import { listStoredSttPresenceByConversationIds, listRecentConversationIdsWithStoredStt } from "./evalResultStore";
-import { listBatchTranscriptConversationIds } from "./sttBatchStore";
+import {
+  listBatchTranscriptConversationIds,
+  listBatchTranscriptPresenceByConversationIds,
+} from "./sttBatchStore";
 import type { SttSource } from "./types";
 
 export type SttPresence = { hasStt: boolean; sttSource: SttSource | null };
@@ -14,7 +17,8 @@ export async function listSttPresenceByConversationIds(
 
   const [stored, batchIds] = await Promise.all([
     listStoredSttPresenceByConversationIds(ids),
-    listBatchTranscriptConversationIds(),
+    // 반환 행만 경로 exists — 전사 JSON 전량 파싱하지 않음
+    listBatchTranscriptPresenceByConversationIds(ids),
   ]);
 
   for (const id of ids) {

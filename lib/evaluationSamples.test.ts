@@ -4,12 +4,14 @@ const query = vi.fn();
 vi.mock("./bigquery", () => ({ getBQ: () => ({ query }) }));
 
 import { listEvaluationSamples } from "./evaluationSamples";
+import { cacheInvalidate } from "./serverCache";
 
 const lastQuery = () => String(query.mock.calls.at(-1)?.[0]?.query ?? "");
 
 beforeEach(() => {
   query.mockReset();
   query.mockResolvedValue([[]]);
+  cacheInvalidate("eval-samples");
 });
 
 describe("listEvaluationSamples — 콜 날짜는 KST 기준", () => {
@@ -37,6 +39,7 @@ describe("listEvaluationSamples — 콜 날짜는 KST 기준", () => {
           conversation_id: "c1",
           call_start: "2026-07-28T23:30:00.000000Z", // UTC 07-28 = KST 07-29
           call_date_kst: "2026-07-29",
+          call_start_kst: "2026-07-29 08:30:00",
           call_end: "2026-07-28T23:35:00.000000Z",
           minutes_taken: "5",
         },
@@ -44,6 +47,8 @@ describe("listEvaluationSamples — 콜 날짜는 KST 기준", () => {
     ]);
     const [s] = await listEvaluationSamples({});
     expect(s.callDate).toBe("2026-07-29");
+    // 목록에는 초까지 보여준다(필터·배치는 여전히 날짜만 쓴다)
+    expect(s.callStartKst).toBe("2026-07-29 08:30:00");
     expect(s.callDurationSec).toBe(300); // 길이 계산은 절대시각 기준이라 변환과 무관
   });
 });

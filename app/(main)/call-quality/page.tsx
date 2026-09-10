@@ -1,8 +1,7 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
-import { canAccessCallQuality } from "@/lib/adminEmails";
-import { canAccessCallQualityObserve } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessCallQuality, ensureSessionCanAccessCallQualityObserve } from "@/lib/sessionAccessServer";
 import { isTruthyQueryParam } from "@/lib/callQualityDeepLink";
 import CallQualityEval from "@/components/CallQualityEval";
 
@@ -14,23 +13,23 @@ function queryFlag(sp: SearchParams, key: string): boolean {
   return isTruthyQueryParam(v ?? null);
 }
 
-// 성장문화실 평가 진행(테스트용 샘플 AI 평가). 허용 계정(CALL_QUALITY_EMAILS)만.
-// observe=1 이면 @daangnservice.com 로그인 계정 전원 STT·녹취 청취 가능.
+// 성장문화실 평가 진행 — 개인 화이트리스트 또는 Google Groups 멤버십.
+// observe=1 도 동일(평가 권한 또는 페이 화이트리스트).
 export default async function CallQualityPage({
   searchParams,
 }: {
-  searchParams: Promise<SearchParams> | SearchParams;
+  // Next 15의 PageProps는 searchParams가 Promise인 것만 받는다(동기 형태와 union 불가).
+  searchParams: Promise<SearchParams>;
 }) {
   const session = await getServerSession(authOptions);
-  const email = session?.user?.email;
-  const sp = await Promise.resolve(searchParams);
+  const sp = await searchParams;
   const observe = queryFlag(sp, "observe");
 
   if (observe) {
-    if (!canAccessCallQualityObserve(email)) redirect("/");
+    if (!await ensureSessionCanAccessCallQualityObserve(session)) redirect("/");
     return <CallQualityEval org="growth" />;
   }
 
-  if (!canAccessCallQuality(email)) redirect("/");
+  if (!await ensureSessionCanAccessCallQuality(session)) redirect("/");
   return <CallQualityEval org="growth" />;
 }

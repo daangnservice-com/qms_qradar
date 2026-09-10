@@ -4,6 +4,7 @@ const FALLBACK_LABELS: Record<string, string> = {
   long_call: "장콜",
   agent_speak_high: "상담사 발화 과다",
   agitated: "격앙",
+  dsat: "DSAT",
 };
 
 export function buildHighRiskFlagLabelMap(rules: HighRiskFlagRule[] | undefined | null): Map<string, string> {

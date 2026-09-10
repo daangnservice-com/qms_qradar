@@ -774,6 +774,7 @@ export async function listRecentAnalyzedConversationIds(org: CallQualityOrg, lim
 export async function listEvalFlagsByConversationIds(
   org: CallQualityOrg,
   conversationIds: string[],
+  opts?: { liveHuman?: boolean },
 ): Promise<
   Map<
     string,
@@ -797,6 +798,7 @@ export async function listEvalFlagsByConversationIds(
   >();
   if (!ids.length) return out;
   await ensureEvalResultsTable();
+  const liveHuman = opts?.liveHuman !== false;
   try {
     const [rows] = await getBQ().query({
       query: `
@@ -831,7 +833,9 @@ export async function listEvalFlagsByConversationIds(
         humanResult,
       });
     }
-    await applyLiveHumanToFlags(out, checklistById);
+    if (liveHuman) {
+      await applyLiveHumanToFlags(out, checklistById);
+    }
   } catch (e) {
     // high_risk_flags_json / 라벨 컬럼 미존재 시 폴백
     try {

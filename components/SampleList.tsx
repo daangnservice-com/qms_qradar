@@ -9,6 +9,10 @@ import { readNdjson } from "@/lib/ndjson";
 import { formatClock } from "@/lib/format";
 import ThresholdSlider from "./ThresholdSlider";
 import FilterPanel from "./FilterPanel";
+import { buildHighRiskFlagLabelMap, resolveHighRiskFlagLabel } from "@/lib/highRiskFlagLabels";
+
+// 이 화면은 규칙 API를 부르지 않으므로 기본 라벨(장콜·격앙·DSAT 등)만 쓴다.
+const HIGH_RISK_FLAG_LABELS = buildHighRiskFlagLabelMap([]);
 
 // 분석 진행 단계 표시(서버가 흘려보내는 progress 이벤트 기준).
 const STEP_LABEL: Record<EvaluateStep, string> = {
@@ -247,15 +251,29 @@ export default function SampleList({
                         key={k}
                         className="inline-flex items-center rounded-[var(--radius-sm)] bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700"
                       >
-                        {k === "long_call" ? "장콜" : k === "agitated" ? "격앙" : k === "agent_speak_high" ? "발화과다" : k}
+                        {resolveHighRiskFlagLabel(k, HIGH_RISK_FLAG_LABELS)}
                       </span>
                     ))}
+                    {typeof s.csatRate === "number" && (
+                      <span
+                        title={`고객 설문(CSAT) ${Math.round(s.csatRate)}점`}
+                        className={`inline-flex items-center rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[10px] font-semibold ${
+                          s.csatRate <= 2
+                            ? "bg-red-50 text-red-700"
+                            : s.csatRate <= 3
+                              ? "bg-amber-50 text-amber-700"
+                              : "bg-emerald-50 text-emerald-700"
+                        }`}
+                      >
+                        CSAT {Math.round(s.csatRate)}
+                      </span>
+                    )}
                   </div>
                   <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--fg-secondary)]">
-                    {s.callDate && (
-                      <span className="inline-flex items-center gap-1">
+                    {(s.callStartKst || s.callDate) && (
+                      <span className="inline-flex items-center gap-1 whitespace-nowrap">
                         <Calendar className="h-3 w-3 text-[var(--fg-tertiary)]" />
-                        {s.callDate}
+                        {s.callStartKst || s.callDate}
                       </span>
                     )}
                     {s.callDurationSec != null && (

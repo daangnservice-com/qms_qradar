@@ -16,11 +16,13 @@ export function buildCriterionMetaMap(
     m.set(c.id, { id: c.id, label: c.label, category: c.category, reviewScope: c.reviewScope });
   for (const c of criteria ?? []) {
     if (!c || !Number.isFinite(c.id)) continue;
+    const prev = m.get(c.id);
     m.set(c.id, {
       id: c.id,
       label: c.label || String(c.id),
       category: c.category ?? "",
-      reviewScope: c.reviewScope,
+      // 스냅샷에 reviewScope가 없으면 하드코딩 기본값 유지 (예: 습관어 일괄)
+      reviewScope: c.reviewScope ?? prev?.reviewScope,
     });
   }
   return m;

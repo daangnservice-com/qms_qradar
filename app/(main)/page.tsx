@@ -1,15 +1,13 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
-import {
-  canAccessCallQuality,
-  isAdmin,
-} from "@/lib/adminEmails";
+import { isAdmin } from "@/lib/adminEmails";
+import { ensureSessionCanAccessCallQuality } from "@/lib/sessionAccessServer";
 
 export default async function Home() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (canAccessCallQuality(email)) redirect("/call-quality");
+  if (await ensureSessionCanAccessCallQuality(session)) redirect("/call-quality");
   if (isAdmin(email)) redirect("/usage");
 
   return (

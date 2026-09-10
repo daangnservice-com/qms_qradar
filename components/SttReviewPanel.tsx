@@ -18,14 +18,15 @@ import type { ChecklistResult, TranscriptSegment, SttSource } from "@/lib/types"
 import {
   BEST_MARK_CATEGORIES,
   bestMarkLabel,
+  annotationFinalJudgment,
   annotationReviewNeeded,
   type BestMarkCategoryId,
   type EvalReviewAnnotation,
   type HumanJudgment,
 } from "@/lib/evalReviewTypes";
 import {
-  hotColdLabel,
-  hotColdTone,
+  finalJudgmentLabel,
+  finalJudgmentTone,
   reviewNeededLabel,
   reviewNeededTone,
   SOURCE_AI_TONE,
@@ -67,6 +68,8 @@ type DraftAiReview = {
   judgment: HumanJudgment;
   comment: string;
   annotationId?: string;
+  /** true면 동일 평가항목의 모든 발생에 판정·코멘트 일괄 적용 (scope=conversation) */
+  bulkApply: boolean;
 };
 
 export default function SttReviewPanel({
@@ -114,6 +117,11 @@ export default function SttReviewPanel({
     [segments, checklist, criteria],
   );
   const aiBySeg = useMemo(() => badgesBySegment(aiBadges), [aiBadges]);
+  const badgeCountByCriterion = useMemo(() => {
+    const m = new Map<number, number>();
+    for (const b of aiBadges) m.set(b.criterionId, (m.get(b.criterionId) ?? 0) + 1);
+    return m;
+  }, [aiBadges]);
 
   const humanBySeg = useMemo(() => {
     const m = new Map<number, EvalReviewAnnotation[]>();
@@ -331,14 +339,25 @@ export default function SttReviewPanel({
                       const rk = aiReviewKey(b.criterionId, b.evidenceAtSec, b.quote);
                       const review =
                         conversationReviewByCriterion.get(b.criterionId) ?? aiReviewByKey.get(rk);
+                      const siblingCount = badgeCountByCriterion.get(b.criterionId) ?? 1;
                       return (
                         <AiBadgeChip
                           key={b.key}
                           badge={b}
                           review={review}
+                          siblingCount={siblingCount}
                           open={openKey === b.key}
                           onToggle={() => {
                             setOpenKey(openKey === b.key ? null : b.key);
+                            const configuredBulk =
+                              resolveCriterionReviewScope(b.criterionId, criteria) ===
+                              "conversation";
+                            const defaultBulk =
+                              review?.scope === "conversation"
+                                ? true
+                                : review?.scope === "occurrence"
+                                  ? false
+                                  : siblingCount > 1 || configuredBulk;
                             setDraftAi({
                               badgeKey: b.key,
                               criterionId: b.criterionId,
@@ -349,6 +368,7 @@ export default function SttReviewPanel({
                               judgment: review?.judgment ?? (b.violated ? "cold" : "hot"),
                               comment: review?.comment ?? "",
                               annotationId: review?.annotationId,
+                              bulkApply: defaultBulk,
                             });
                           }}
                           onSeek={onSeek}
@@ -359,8 +379,14 @@ export default function SttReviewPanel({
                             if (!draftAi || draftAi.badgeKey !== b.key || !onSaveReview) return;
                             setSaving(true);
                             try {
+                              const scope = draftAi.bulkApply ? "conversation" : "occurrence";
                               await onSaveReview({
-                                annotationId: draftAi.annotationId,
+                                annotationId:
+                                  scope === "conversation"
+                                    ? undefined
+                                    : draftAi.annotationId?.startsWith("conversation:")
+                                      ? undefined
+                                      : draftAi.annotationId,
                                 conversationId,
                                 source: "ai",
                                 atSec: b.evidenceAtSec,
@@ -375,7 +401,7 @@ export default function SttReviewPanel({
                                 aiQuote: b.quote,
                                 aiReason: b.reason,
                                 quote: b.quote,
-                                scope: resolveCriterionReviewScope(draftAi.criterionId, criteria),
+                                scope,
                               });
                               setOpenKey(null);
                             } finally {
@@ -557,7 +583,10 @@ function formatMarkedTranscript(
       if (review) {
         const needed = annotationReviewNeeded(review);
         line += ` · 수기 ${needed ? "검토 필요" : "검토 불필요"}`;
-        if (needed) line += ` · 최종 ${review.judgment === "cold" ? "Cold" : "Hot"}`;
+        if (needed) {
+          const final = annotationFinalJudgment(review);
+          if (final) line += ` · 최종 ${finalJudgmentLabel(final)}`;
+        }
       }
       if (b.reason) line += ` — ${b.reason}`;
       lines.push(line);
@@ -574,7 +603,8 @@ function formatMarkedTranscript(
         lines.push(line);
         continue;
       }
-      let line = `  └ [수기] ${r.criterionId} ${resolveCriterionLabel(r.criterionId, criteria)} · 검토 필요 · 최종 ${r.judgment === "cold" ? "Cold" : "Hot"}`;
+      const final = annotationFinalJudgment(r);
+      let line = `  └ [수기] ${r.criterionId} ${resolveCriterionLabel(r.criterionId, criteria)} · 검토 필요${final ? ` · 최종 ${finalJudgmentLabel(final)}` : ""}`;
       if (r.comment) line += ` — ${r.comment}`;
       lines.push(line);
     }
@@ -662,12 +692,12 @@ function ReviewForm({
     <div className="mt-1 w-full rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-canvas)] p-2.5 shadow-sm">
       <div className="mb-2 text-[11px] font-bold text-[var(--fg-tertiary)]">{title}</div>
       <p className="mb-2 text-[10.5px] leading-snug text-[var(--fg-tertiary)]">
-        미검출 추가는 검토 필요로 기록됩니다. Cold/Hot은 최종 감안 판정입니다.
+        미검출 추가는 검토 필요로 기록됩니다. Cold/Hot/Hold는 최종 감안 판정입니다.
       </p>
-      <div className="flex gap-1">
+      <div className="flex flex-wrap gap-1">
         <button
           type="button"
-          className={`flex-1 cursor-pointer rounded-md py-1.5 text-[12px] font-bold ${
+          className={`min-w-[4.5rem] flex-1 cursor-pointer rounded-md py-1.5 text-[12px] font-bold ${
             judgment === "cold" ? "bg-[var(--info)] text-white" : "bg-[var(--bg-muted)] text-[var(--fg-secondary)]"
           }`}
           onClick={() => onChange({ judgment: "cold" })}
@@ -676,7 +706,7 @@ function ReviewForm({
         </button>
         <button
           type="button"
-          className={`flex-1 cursor-pointer rounded-md py-1.5 text-[12px] font-bold ${
+          className={`min-w-[4.5rem] flex-1 cursor-pointer rounded-md py-1.5 text-[12px] font-bold ${
             judgment === "hot" ? "bg-[var(--c-carrot-500)] text-white" : "bg-[var(--bg-muted)] text-[var(--fg-secondary)]"
           }`}
           onClick={() => onChange({ judgment: "hot" })}
@@ -685,7 +715,17 @@ function ReviewForm({
         </button>
         <button
           type="button"
-          className={`flex-1 cursor-pointer rounded-md py-1.5 text-[12px] font-bold ${
+          title="문제 상황은 맞지만 감안 여부를 아직 정하지 못함"
+          className={`min-w-[4.5rem] flex-1 cursor-pointer rounded-md py-1.5 text-[12px] font-bold ${
+            judgment === "hold" ? "bg-[var(--fg-tertiary)] text-white" : "bg-[var(--bg-muted)] text-[var(--fg-secondary)]"
+          }`}
+          onClick={() => onChange({ judgment: "hold" })}
+        >
+          Hold
+        </button>
+        <button
+          type="button"
+          className={`min-w-[4.5rem] flex-1 cursor-pointer rounded-md py-1.5 text-[12px] font-bold ${
             judgment === "best" ? "bg-[var(--warning)] text-white" : "bg-[var(--bg-muted)] text-[var(--fg-secondary)]"
           }`}
           onClick={() => onChange({ judgment: "best" })}
@@ -743,15 +783,19 @@ function ReviewForm({
   );
 }
 
-function reviewSummary(review: EvalReviewAnnotation): { needed: boolean; final: "cold" | "hot" | null } {
+function reviewSummary(review: EvalReviewAnnotation): {
+  needed: boolean;
+  final: "cold" | "hot" | "hold" | null;
+} {
   if (review.judgment === "best") return { needed: false, final: null };
   const needed = annotationReviewNeeded(review);
-  return { needed, final: needed ? (review.judgment === "hot" ? "hot" : "cold") : null };
+  return { needed, final: needed ? annotationFinalJudgment(review) : null };
 }
 
 function AiBadgeChip({
   badge,
   review,
+  siblingCount,
   open,
   onToggle,
   onSeek,
@@ -762,6 +806,7 @@ function AiBadgeChip({
 }: {
   badge: SttChecklistBadge;
   review?: EvalReviewAnnotation;
+  siblingCount: number;
   open: boolean;
   onToggle: () => void;
   onSeek?: (sec: number) => void;
@@ -773,6 +818,8 @@ function AiBadgeChip({
   const needed = badge.violated;
   const reviewed = Boolean(review);
   const human = review ? reviewSummary(review) : null;
+  const bulkReview = review?.scope === "conversation";
+  const canBulk = siblingCount > 1;
   return (
     <div className={`max-w-full ${open ? "w-full" : ""}`}>
       <button
@@ -790,8 +837,11 @@ function AiBadgeChip({
         {reviewed && human && (
           <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--brand-subtle)] px-1 py-0.5 ring-1 ring-[var(--brand)]/25">
             <MarkTag tone={SOURCE_HUMAN_TONE}>수기</MarkTag>
+            {bulkReview ? <MarkTag tone="neutral">일괄</MarkTag> : null}
             <MarkTag tone={reviewNeededTone(human.needed)}>{reviewNeededLabel(human.needed)}</MarkTag>
-            {human.final ? <MarkTag tone={hotColdTone(human.final)}>{hotColdLabel(human.final)}</MarkTag> : null}
+            {human.final ? (
+              <MarkTag tone={finalJudgmentTone(human.final)}>{finalJudgmentLabel(human.final)}</MarkTag>
+            ) : null}
           </span>
         )}
         <span className="font-mono tabular-nums text-[var(--seed-color-fg-neutral-muted)]">{badge.criterionId}</span>
@@ -832,6 +882,44 @@ function AiBadgeChip({
             </p>
           )}
           <div className="mt-2 border-t border-[var(--border-subtle)] pt-2">
+            {canBulk && (
+              <div className="mb-2">
+                <div className="mb-1 text-[10.5px] font-bold text-[var(--fg-tertiary)]">
+                  동일 평가항목 일괄 검수
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={draft.bulkApply}
+                  className={`flex w-full items-center justify-between gap-2 rounded-md px-2.5 py-2 text-left text-[12px] font-semibold ${
+                    draft.bulkApply
+                      ? "bg-[var(--brand-subtle)] ring-1 ring-[var(--brand)]/30"
+                      : "bg-[var(--bg-muted)]"
+                  }`}
+                  onClick={() => setDraft({ ...draft, bulkApply: !draft.bulkApply })}
+                >
+                  <span>
+                    {draft.bulkApply
+                      ? `이 상담의 동일 항목 ${siblingCount}건에 동일 판정 적용`
+                      : `이 발생만 판정 (동일 항목 ${siblingCount}건)`}
+                  </span>
+                  <span
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                      draft.bulkApply ? "bg-[var(--brand)]" : "bg-[var(--border-default)]"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                        draft.bulkApply ? "left-4" : "left-0.5"
+                      }`}
+                    />
+                  </span>
+                </button>
+                <p className="mt-1 text-[10.5px] leading-snug text-[var(--fg-tertiary)]">
+                  습관어처럼 n회 이상 위반 항목은 일괄 검수로 검토필요/불필요·Hot/Cold/Hold를 한 번에 남길 수 있어요.
+                </p>
+              </div>
+            )}
             <div className="mb-1 text-[10.5px] font-bold text-[var(--fg-tertiary)]">검토 필요 여부</div>
             <div className="flex gap-1">
               <button
@@ -862,10 +950,10 @@ function AiBadgeChip({
             {draft.reviewNeeded ? (
               <>
                 <div className="mb-1 mt-2 text-[10.5px] font-bold text-[var(--fg-tertiary)]">최종 판정</div>
-                <div className="flex gap-1">
+                <div className="flex flex-wrap gap-1">
                   <button
                     type="button"
-                    className={`flex-1 rounded-md py-1.5 text-[12px] font-bold ${
+                    className={`min-w-[5rem] flex-1 rounded-md py-1.5 text-[12px] font-bold ${
                       draft.judgment === "cold" ? "bg-[var(--info)] text-white" : "bg-[var(--bg-muted)]"
                     }`}
                     onClick={() => setDraft({ ...draft, judgment: "cold" })}
@@ -874,12 +962,22 @@ function AiBadgeChip({
                   </button>
                   <button
                     type="button"
-                    className={`flex-1 rounded-md py-1.5 text-[12px] font-bold ${
+                    className={`min-w-[5rem] flex-1 rounded-md py-1.5 text-[12px] font-bold ${
                       draft.judgment === "hot" ? "bg-[var(--c-carrot-500)] text-white" : "bg-[var(--bg-muted)]"
                     }`}
                     onClick={() => setDraft({ ...draft, judgment: "hot" })}
                   >
                     Hot · 감안
+                  </button>
+                  <button
+                    type="button"
+                    title="문제 상황은 맞지만 감안 여부를 아직 정하지 못함"
+                    className={`min-w-[5rem] flex-1 rounded-md py-1.5 text-[12px] font-bold ${
+                      draft.judgment === "hold" ? "bg-[var(--fg-tertiary)] text-white" : "bg-[var(--bg-muted)]"
+                    }`}
+                    onClick={() => setDraft({ ...draft, judgment: "hold" })}
+                  >
+                    Hold · 잘 모르겠음
                   </button>
                 </div>
               </>
@@ -895,7 +993,11 @@ function AiBadgeChip({
               onChange={(e) => setDraft({ ...draft, comment: e.target.value })}
             />
             <button type="button" className="qms-btn-primary mt-2 w-full" disabled={saving} onClick={onSave}>
-              {saving ? "저장 중…" : "수기 검수 저장"}
+              {saving
+                ? "저장 중…"
+                : draft.bulkApply && canBulk
+                  ? `수기 검수 저장 · ${siblingCount}건 일괄`
+                  : "수기 검수 저장"}
             </button>
           </div>
         </div>
@@ -940,7 +1042,9 @@ function HumanBadgeChip({
           <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--bg-canvas)] px-1 py-0.5 ring-1 ring-[var(--brand)]/25">
             <MarkTag tone={SOURCE_HUMAN_TONE}>수기</MarkTag>
             <MarkTag tone={reviewNeededTone(true)}>{reviewNeededLabel(true)}</MarkTag>
-            {human?.final ? <MarkTag tone={hotColdTone(human.final)}>{hotColdLabel(human.final)}</MarkTag> : null}
+            {human?.final ? (
+              <MarkTag tone={finalJudgmentTone(human.final)}>{finalJudgmentLabel(human.final)}</MarkTag>
+            ) : null}
             <span className="font-mono tabular-nums text-[var(--seed-color-fg-neutral-muted)]">{review.criterionId}</span>
           </span>
         )}

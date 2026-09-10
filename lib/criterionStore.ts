@@ -389,6 +389,9 @@ function rowToCriterionPrompt(r: Record<string, unknown>): CriterionPrompt {
   const promptIdRaw = r.prompt_id != null ? String(r.prompt_id).trim() : "";
   const promptId = promptIdRaw || `legacy-${criterionId}-${updatedAt}`;
   const versionLabel = String(r.version_label ?? "").trim() || "v1";
+  const rawScope = r.review_scope;
+  const hasExplicitScope =
+    rawScope != null && String(rawScope).trim() !== "";
   return {
     promptId,
     criterionId,
@@ -396,7 +399,7 @@ function rowToCriterionPrompt(r: Record<string, unknown>): CriterionPrompt {
     category: String(r.category ?? ""),
     label: String(r.label ?? ""),
     fields,
-      reviewScope: parseCriterionReviewScope(r.review_scope),
+    reviewScope: hasExplicitScope ? parseCriterionReviewScope(rawScope) : undefined,
     updatedAt,
     updatedBy: String(r.updated_by ?? ""),
   };
@@ -442,7 +445,7 @@ export async function buildCriteriaSnapshot(bindings: EvalCriterionBinding[]): P
       label: p?.label || hard?.label || s?.name || String(b.criterionId),
       hint: fields.definition || hard?.hint || "",
       fields,
-      reviewScope: p?.reviewScope ?? DEFAULT_CRITERION_REVIEW_SCOPE,
+      reviewScope: p?.reviewScope ?? hard?.reviewScope ?? DEFAULT_CRITERION_REVIEW_SCOPE,
     };
   });
 }

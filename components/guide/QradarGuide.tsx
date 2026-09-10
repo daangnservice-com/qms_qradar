@@ -462,10 +462,11 @@ export default function QradarGuide() {
                 </dd>
               </div>
               <div>
-                <dt className="text-[13px] font-bold text-[var(--fg-primary)]">검토 필요 / 최종 Hot·Cold</dt>
+                <dt className="text-[13px] font-bold text-[var(--fg-primary)]">검토 필요 / 최종 Hot·Cold·Hold</dt>
                 <dd className="text-[12.5px] text-[var(--fg-secondary)]">
-                  AI는 체크리스트 검출(검토 필요)만 합니다. 수기는 검토 필요 여부와 최종 감안(Cold/Hot)을 따로 남깁니다.
-                  대시보드 매트릭스는 검토필요 축입니다.
+                  AI는 체크리스트 검출(검토 필요)만 합니다. 수기는 검토 필요 여부와 최종 감안(Cold/Hot/Hold)을 따로
+                  남깁니다. Hold는 문제 상황은 맞지만 감안 여부를 아직 모를 때입니다. 대시보드 매트릭스는 검토필요
+                  축입니다.
                 </dd>
               </div>
               <div>

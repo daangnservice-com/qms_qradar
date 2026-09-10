@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { canAccessCallQuality } from "@/lib/adminEmails";
+import { ensureSessionCanAccessCallQuality } from "@/lib/sessionAccessServer";
 import {
   FEEDBACK_SOURCE_SYSTEM,
   listFeedbackSamples,
@@ -20,7 +20,7 @@ type Body = {
 /** 인앱 문의 스레드 목록. 전화 전용 call-quality 샘플 API와 분리한다. */
 export async function POST(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
-  if (!canAccessCallQuality(session?.user?.email)) {
+  if (!await ensureSessionCanAccessCallQuality(session)) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
 

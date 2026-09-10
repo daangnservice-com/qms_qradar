@@ -59,10 +59,13 @@ export type CallQualityObserveLinkTarget = {
 
 /** 평가 진행 딥링크 (기본 — 기존 배포 링크와 동일 동작) */
 export function buildCallQualityDeepLink(
-  conversationId: string,
+  target: string | CallQualityObserveLinkTarget,
   opts?: { autoEval?: boolean; from?: string },
 ): string {
-  const q = new URLSearchParams({ conversationId });
+  const resolved = typeof target === "string" ? { conversationId: target } : { ...target };
+  const q = new URLSearchParams();
+  if (resolved.conversationId?.trim()) q.set("conversationId", resolved.conversationId.trim());
+  if (resolved.inquiryId?.trim()) q.set("inquiry_id", resolved.inquiryId.trim());
   if (opts?.autoEval) q.set("autoEval", "1");
   if (opts?.from) q.set("from", opts.from);
   return `/call-quality?${q.toString()}`;

@@ -20,6 +20,8 @@ import type {
   EvaluationResult,
   EvaluationSample,
   SampleFilters,
+  SttSource,
+  TranscriptSegment,
 } from "@/lib/types";
 import type { CallQualityOrg } from "@/lib/callQualityOrg";
 import { describeApiError } from "@/lib/apiError";
@@ -30,8 +32,8 @@ import { deriveHumanReviewNeededLabel, deriveHumanResultLabel } from "@/lib/huma
 import { estimateEvalMs, formatProgressWithEta, recordEvalEta } from "@/lib/evalEta";
 import {
   displayReviewNeededLabel,
-  hotColdLabel,
-  hotColdTone,
+  finalJudgmentLabel,
+  finalJudgmentTone,
   isReviewNeededRaw,
   reviewNeededLabel,
   reviewNeededTone,
@@ -39,16 +41,22 @@ import {
   SOURCE_HUMAN_TONE,
 } from "@/lib/judgmentUi";
 import FilterPanel from "@/components/FilterPanel";
-import SampleListQuickFilters, { type ReviewFilterState, type SttFilterState } from "@/components/SampleListQuickFilters";
+import SampleListQuickFilters, {
+  type HighRiskFlagOption,
+  type ReviewFilterState,
+  type SttFilterState,
+} from "@/components/SampleListQuickFilters";
 import EvalCaseDetail from "@/components/EvalCaseDetail";
 import CallPlaybackBar, { type PlaybackMarker } from "@/components/CallPlaybackBar";
 import SttReviewPanel from "@/components/SttReviewPanel";
+import CallQualityEvalHelpTip from "@/components/CallQualityEvalHelpTip";
+import CsatPanel, { CsatRateBadge } from "@/components/CsatPanel";
 import QmsLoadingOverlay from "@/components/QmsLoadingOverlay";
 import { ActionButton } from "seed-design/ui/action-button";
 import { buildSttChecklistBadges } from "@/lib/sttChecklistBadges";
 import { resolveCriterionLabel } from "@/lib/criterionLabel";
 import type { EvalReviewAnnotation } from "@/lib/evalReviewTypes";
-import { annotationReviewNeeded } from "@/lib/evalReviewTypes";
+import { annotationFinalJudgment, annotationReviewNeeded } from "@/lib/evalReviewTypes";
 import { bestMarkLabel } from "@/lib/evalReviewTypes";
 import PromptImproveCheckoutWidget from "@/components/PromptImproveCheckoutWidget";
 import ReviewStatusCheckoutWidget from "@/components/ReviewStatusCheckoutWidget";
@@ -98,6 +106,9 @@ function filtersActive(f: SampleFilters): boolean {
       f.adminNames?.length ||
       f.analyzedOnly ||
       f.highRiskOnly ||
+      f.highRiskFlagKeys?.length ||
+      f.csatRates?.length ||
+      f.csatIncludeNone ||
       f.reviewStatus ||
       f.sttStatus ||
       f.mineOnly,
@@ -113,9 +124,11 @@ function readFiltersFromUrl(): SampleFilters {
   } catch {
     /* ignore */
   }
-  const cid = (sp.get("conversationId") || sp.get("conversation_id") || "").trim();
-  if (cid) return { conversationIds: [cid] };
-  return {};
+  const { conversationId, inquiryId } = readCallQualityDeepLink();
+  const out: SampleFilters = {};
+  if (conversationId) out.conversationIds = [conversationId];
+  if (inquiryId) out.phoneInquiryIds = [inquiryId];
+  return out;
 }
 
 function writeFiltersToUrl(f: SampleFilters) {
@@ -123,21 +136,58 @@ function writeFiltersToUrl(f: SampleFilters) {
   const url = new URL(window.location.href);
   if (filtersActive(f)) url.searchParams.set("f", JSON.stringify(f));
   else url.searchParams.delete("f");
-  // conversationId / autoEval 은 딥링크용으로 유지(필터 f와 병행)
+  // conversationId / inquiry_id / autoEval 은 딥링크용으로 유지(필터 f와 병행)
   window.history.replaceState(null, "", url.toString());
 }
 
-function readDeepLink(): { conversationId: string | null; autoEval: boolean } {
-  const { conversationId, autoEval } = readCallQualityDeepLink();
-  return { conversationId, autoEval };
+function readDeepLink(): {
+  conversationId: string | null;
+  inquiryId: string | null;
+  autoEval: boolean;
+} {
+  const { conversationId, inquiryId, autoEval } = readCallQualityDeepLink();
+  return { conversationId, inquiryId, autoEval };
 }
 
-function quickFilterSlice(
-  f: SampleFilters,
-): Pick<SampleFilters, "analyzedOnly" | "highRiskOnly" | "reviewStatus" | "sttStatus"> {
+/** 딥링크 conversationId / inquiry_id 를 샘플 필터에 합친다 */
+function mergeDeepLinkFilters(
+  base: SampleFilters,
+  deep: { conversationId: string | null; inquiryId: string | null },
+): SampleFilters {
+  let next = base;
+  if (deep.conversationId && !next.conversationIds?.includes(deep.conversationId)) {
+    next = {
+      ...next,
+      conversationIds: [...(next.conversationIds ?? []), deep.conversationId],
+    };
+  }
+  if (deep.inquiryId && !next.phoneInquiryIds?.includes(deep.inquiryId)) {
+    next = {
+      ...next,
+      phoneInquiryIds: [...(next.phoneInquiryIds ?? []), deep.inquiryId],
+    };
+  }
+  return next;
+}
+
+type QuickFilters = Pick<
+  SampleFilters,
+  | "analyzedOnly"
+  | "highRiskOnly"
+  | "highRiskFlagKeys"
+  | "csatRates"
+  | "csatIncludeNone"
+  | "reviewStatus"
+  | "sttStatus"
+>;
+
+function quickFilterSlice(f: SampleFilters): QuickFilters {
   return {
     analyzedOnly: f.analyzedOnly,
     highRiskOnly: f.highRiskOnly,
+    highRiskFlagKeys: f.highRiskFlagKeys,
+    csatRates: f.csatRates,
+    csatIncludeNone: f.csatIncludeNone,
     reviewStatus: f.reviewStatus,
     sttStatus: f.sttStatus,
   };
@@ -163,9 +213,7 @@ export default function EvalProgressWorkbench({
   const [loadingList, setLoadingList] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [appliedFilters, setAppliedFilters] = useState<SampleFilters>({});
-  const [draftQuickFilters, setDraftQuickFilters] = useState<
-    Pick<SampleFilters, "analyzedOnly" | "highRiskOnly" | "reviewStatus" | "sttStatus">
-  >({});
+  const [draftQuickFilters, setDraftQuickFilters] = useState<QuickFilters>({});
   const [restored, setRestored] = useState(false);
   const restoredInitial = useRef<SampleFilters>({});
   const appliedFiltersRef = useRef<SampleFilters>({});
@@ -210,6 +258,10 @@ export default function EvalProgressWorkbench({
   const [highRiskFlagLabels, setHighRiskFlagLabels] = useState<Map<string, string>>(() =>
     buildHighRiskFlagLabelMap([]),
   );
+  /** 고위험군 펼침 목록에 쓸 활성 규칙(평가 설계에서 관리) */
+  const [highRiskOptions, setHighRiskOptions] = useState<HighRiskFlagOption[]>([]);
+  /** AI 평가 없이 STT만 있는 통화의 전사 — conversationId → segments */
+  const [sttOnly, setSttOnly] = useState<Record<string, { segments: TranscriptSegment[]; sttSource: SttSource | null; durationSec: number | null }>>({});
 
   const seekRef = useRef<(sec: number) => void>(() => {});
   const centerScrollRef = useRef<HTMLElement | null>(null);
@@ -220,6 +272,12 @@ export default function EvalProgressWorkbench({
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
       .then((d: { rules?: HighRiskFlagRule[] }) => {
         setHighRiskFlagLabels(buildHighRiskFlagLabelMap(d.rules));
+        setHighRiskOptions(
+          (d.rules ?? [])
+            .filter((r) => r.enabled)
+            .sort((a, b) => a.sortOrder - b.sortOrder)
+            .map((r) => ({ key: r.key, label: r.label || r.key })),
+        );
       })
       .catch(() => {
         /* fallback labels only */
@@ -554,28 +612,60 @@ export default function EvalProgressWorkbench({
     [evaluatingId, minSilenceSec, org],
   );
 
+  /**
+   * AI 평가 결과에 전사가 없을 때(로컬 배치 STT만 돌아간 건) 저장된 STT를 따로 읽는다.
+   * observe API가 저장된 전사를 그대로 준다 — 여기서 STT를 새로 돌리지는 않는다.
+   */
+  const loadSttOnly = useCallback(
+    async (id: string) => {
+      try {
+        const r = await fetch(
+          `/api/call-quality/observe?conversationId=${encodeURIComponent(id)}&org=${org}`,
+        );
+        if (!r.ok) return; // 404 = 전사 없음(정상)
+        const d = (await r.json()) as {
+          transcript?: TranscriptSegment[];
+          sttSource?: SttSource | null;
+          durationSec?: number | null;
+        };
+        if (!d.transcript?.length) return;
+        setSttOnly((prev) => ({
+          ...prev,
+          [id]: {
+            segments: d.transcript ?? [],
+            sttSource: d.sttSource ?? null,
+            durationSec: d.durationSec ?? null,
+          },
+        }));
+      } catch {
+        /* 부가 표시라 실패는 무시 */
+      }
+    },
+    [org],
+  );
+
   const selectCall = useCallback(
     async (id: string) => {
       setSelectedId(id);
       setEvalError(null);
       void loadReviews(id);
-      if (results[id]) return;
-      setLoadingResult(true);
-      await fetchResult(id);
-      setLoadingResult(false);
+      if (results[id]?.evaluation?.transcript?.length) return;
+      if (!results[id]) {
+        setLoadingResult(true);
+        const r = await fetchResult(id);
+        setLoadingResult(false);
+        if (r?.evaluation?.transcript?.length) return;
+      }
+      if (!sttOnly[id]) void loadSttOnly(id);
     },
-    [fetchResult, loadReviews, results],
+    [fetchResult, loadReviews, loadSttOnly, results, sttOnly],
   );
 
-  // 초기 로드 + 딥링크
+  // 초기 로드 + 딥링크 (conversationId 또는 inquiry_id → 평가 화면에서 해당 통화 선택)
   useEffect(() => {
     const deep = readDeepLink();
     const urlFilters = readFiltersFromUrl();
-    const merged: SampleFilters = { ...(defaultFilters ?? {}), ...urlFilters };
-    const withDeep =
-      deep.conversationId && !merged.conversationIds?.includes(deep.conversationId)
-        ? { ...merged, conversationIds: [...(merged.conversationIds ?? []), deep.conversationId] }
-        : merged;
+    const withDeep = mergeDeepLinkFilters({ ...(defaultFilters ?? {}), ...urlFilters }, deep);
     restoredInitial.current = withDeep;
     setAppliedFilters(withDeep);
     setDraftQuickFilters(quickFilterSlice(withDeep));
@@ -584,16 +674,45 @@ export default function EvalProgressWorkbench({
 
     void (async () => {
       const list = await loadSamples(withDeep);
-      const prefer = deep.conversationId || list[0]?.conversationId || null;
+      const byInquiry = deep.inquiryId
+        ? list.find((s) => s.phoneInquiryId === deep.inquiryId)?.conversationId
+        : null;
+      const prefer = deep.conversationId || byInquiry || list[0]?.conversationId || null;
       if (!prefer) return;
+
+      // 리스트를 먼저 그린 뒤 상세를 붙인다. 딥링크·자동평가는 즉시 로드.
+      const deepLinked = Boolean(deep.conversationId || deep.inquiryId || deep.autoEval);
       setSelectedId(prefer);
-      void loadReviews(prefer);
-      const existing = await fetchResult(prefer);
-      if (!existing && deep.autoEval && !autoEvalTried.current) {
-        autoEvalTried.current = true;
-        const sample = list.find((s) => s.conversationId === prefer);
-        if (sample) void evaluate(sample);
+      setEvalError(null);
+
+      const loadDetail = async () => {
+        void loadReviews(prefer);
+        setLoadingResult(true);
+        const existing = await fetchResult(prefer);
+        setLoadingResult(false);
+        if (!existing?.evaluation?.transcript?.length) {
+          void loadSttOnly(prefer);
+        }
+        if (!existing && deep.autoEval && !autoEvalTried.current) {
+          autoEvalTried.current = true;
+          const sample = list.find((s) => s.conversationId === prefer);
+          if (sample) void evaluate(sample);
+        }
+      };
+
+      if (deepLinked) {
+        await loadDetail();
+        return;
       }
+
+      const schedule =
+        typeof window !== "undefined" && "requestIdleCallback" in window
+          ? (cb: () => void) =>
+              window.requestIdleCallback(cb, { timeout: 1200 })
+          : (cb: () => void) => window.setTimeout(cb, 0);
+      schedule(() => {
+        void loadDetail();
+      });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -632,16 +751,28 @@ export default function EvalProgressWorkbench({
   const patchQuickFilters = (patch: {
     analyzedOnly?: boolean;
     highRiskOnly?: boolean;
+    highRiskFlagKeys?: string[];
+    csatRates?: number[];
+    csatIncludeNone?: boolean;
     reviewStatus?: ReviewFilterState;
     sttStatus?: SttFilterState;
   }) => {
     setDraftQuickFilters((prev) => {
-      const next: Pick<SampleFilters, "analyzedOnly" | "highRiskOnly" | "reviewStatus" | "sttStatus"> = { ...prev };
+      const next: QuickFilters = { ...prev };
       if (patch.analyzedOnly !== undefined) {
         next.analyzedOnly = patch.analyzedOnly || undefined;
       }
       if (patch.highRiskOnly !== undefined) {
         next.highRiskOnly = patch.highRiskOnly || undefined;
+      }
+      if (patch.highRiskFlagKeys !== undefined) {
+        next.highRiskFlagKeys = patch.highRiskFlagKeys.length ? patch.highRiskFlagKeys : undefined;
+      }
+      if (patch.csatRates !== undefined) {
+        next.csatRates = patch.csatRates.length ? [...patch.csatRates].sort((a, b) => a - b) : undefined;
+      }
+      if (patch.csatIncludeNone !== undefined) {
+        next.csatIncludeNone = patch.csatIncludeNone || undefined;
       }
       if (patch.reviewStatus !== undefined) {
         next.reviewStatus =
@@ -661,6 +792,9 @@ export default function EvalProgressWorkbench({
           ...base,
           analyzedOnly: next.analyzedOnly,
           highRiskOnly: next.highRiskOnly,
+          highRiskFlagKeys: next.highRiskFlagKeys,
+          csatRates: next.csatRates,
+          csatIncludeNone: next.csatIncludeNone,
           reviewStatus: next.reviewStatus,
           sttStatus: next.sttStatus,
         };
@@ -679,7 +813,11 @@ export default function EvalProgressWorkbench({
   const promptVersionStatus =
     activeMeta?.promptVersionStatus || activeResult?.promptConfig?.version?.status || null;
   const promptBadge = promptVersionBadgeMeta(promptVersionStatus);
-  const segments = activeResult?.evaluation?.transcript ?? [];
+  // AI 평가 전사가 우선, 없으면 저장된 STT(로컬 배치 등)를 보여준다.
+  const activeSttOnly = selectedId ? sttOnly[selectedId] ?? null : null;
+  const evalSegments = activeResult?.evaluation?.transcript ?? [];
+  const segments = evalSegments.length ? evalSegments : activeSttOnly?.segments ?? [];
+  const sttOnlyView = !evalSegments.length && segments.length > 0;
   const isEvaluating = evaluatingId === selectedId;
   const done = Boolean(selected?.analyzed || (selectedId && results[selectedId]));
   const reviewDone = Boolean(activeMeta?.reviewCompletedAt);
@@ -742,9 +880,10 @@ export default function EvalProgressWorkbench({
       }
       const label = resolveCriterionLabel(r.criterionId, criteria);
       const needed = annotationReviewNeeded(r);
-      const tone = r.judgment === "cold" ? ("cold" as const) : ("hot" as const);
+      const final = needed ? annotationFinalJudgment(r) : null;
+      const tone =
+        final === "cold" ? ("cold" as const) : final === "hold" ? ("hold" as const) : ("hot" as const);
       const body = r.comment ? r.comment.slice(0, 120) : null;
-      const final = needed ? (r.judgment === "cold" ? "Cold" : "Hot") : null;
       marks.push({
         key: `rev-${r.annotationId}`,
         atSec: r.atSec,
@@ -753,7 +892,7 @@ export default function EvalProgressWorkbench({
         criterionId: r.criterionId,
         label,
         body,
-        tip: `수기 · [${r.criterionId}] ${label} · ${needed ? "검토 필요" : "검토 불필요"}${final ? ` · 최종 ${final}` : ""}${body ? `\n${body}` : ""}`,
+        tip: `수기 · [${r.criterionId}] ${label} · ${needed ? "검토 필요" : "검토 불필요"}${final ? ` · 최종 ${finalJudgmentLabel(final)}` : ""}${body ? `\n${body}` : ""}`,
       });
     }
     return marks;
@@ -820,7 +959,7 @@ export default function EvalProgressWorkbench({
       <header className="flex flex-wrap items-end justify-between gap-3 border-b border-[var(--border-subtle)] px-5 py-4">
         <div>
           <div className="text-[11px] font-bold uppercase tracking-wider text-[var(--fg-tertiary)]">평가 진행</div>
-          <h1 className="mt-0.5 text-[20px] font-extrabold tracking-tight">
+          <h1 className="mt-0.5 inline-flex items-center text-[20px] font-extrabold tracking-tight">
             {defaultFilters?.mineOnly
               ? "내 평가"
               : defaultFilters?.reviewStatus === "incomplete" && defaultFilters?.analyzedOnly
@@ -828,16 +967,19 @@ export default function EvalProgressWorkbench({
                 : defaultFilters?.highRiskOnly
                   ? "고위험군 평가"
                   : "전체 평가"}
+            <CallQualityEvalHelpTip />
           </h1>
           <p className="mt-1 text-[12.5px] text-[var(--fg-secondary)]">
             {defaultFilters?.mineOnly
               ? "내가 수기 검수를 남겼거나 검수 찜한, 아직 완료되지 않은 케이스 · 찜하면 검수 진행중 · 찜 없이 완료해도 내가 검수한 것으로 기록"
               : defaultFilters?.reviewStatus === "incomplete" && defaultFilters?.analyzedOnly
-                ? "AI 평가가 끝났고 수기 검수가 아직인 콜만 모았어요 · STT에서 검토 필요/최종 Cold·Hot 검수 후 수기 검수 완료"
-                : "테스트 샘플 AI 평가 · STT 수기 검수(검토 필요·최종 Cold/Hot·Best) · 수기 검수 완료로 확정 · 재생바 기준선=뱃지 시점 · Space 재생/일시정지"}
+                ? "AI 평가가 끝났고 수기 검수가 아직인 콜만 모았어요 · STT에서 검토 필요/최종 Cold·Hot·Hold 검수 후 수기 검수 완료"
+                : "테스트 샘플 AI 평가 · STT 수기 검수(검토 필요·최종 Cold/Hot/Hold·Best) · 수기 검수 완료로 확정 · 재생바 기준선=뱃지 시점 · Space 재생/일시정지"}
             <span className="text-[var(--fg-tertiary)]">
               {" "}
               · <code className="text-[11px]">?conversationId=&amp;autoEval=1</code>
+              {" · "}
+              <code className="text-[11px]">?inquiry_id=</code>
               {" · "}
               <code className="text-[11px]">?conversationId=&amp;observe=1&amp;autoStt=1</code>
             </span>
@@ -860,12 +1002,8 @@ export default function EvalProgressWorkbench({
                   {displayReviewNeededLabel(liveHumanResult)}
                 </Badge>
                 {liveHumanFinal ? (
-                  <Badge
-                    size="large"
-                    variant="solid"
-                    tone={hotColdTone(liveHumanFinal === "cold" ? "cold" : "hot")}
-                  >
-                    최종 {hotColdLabel(liveHumanFinal === "cold" ? "cold" : "hot")}
+                  <Badge size="large" variant="solid" tone={finalJudgmentTone(liveHumanFinal)}>
+                    최종 {finalJudgmentLabel(liveHumanFinal)}
                   </Badge>
                 ) : null}
               </>
@@ -883,6 +1021,10 @@ export default function EvalProgressWorkbench({
             <SampleListQuickFilters
               analyzedOnly={Boolean(draftQuickFilters.analyzedOnly)}
               highRiskOnly={Boolean(draftQuickFilters.highRiskOnly)}
+              highRiskFlagKeys={draftQuickFilters.highRiskFlagKeys ?? []}
+              highRiskOptions={highRiskOptions}
+              csatRates={draftQuickFilters.csatRates ?? []}
+              csatIncludeNone={Boolean(draftQuickFilters.csatIncludeNone)}
               sttStatus={sttFilterState(draftQuickFilters)}
               reviewStatus={reviewFilterState(draftQuickFilters)}
               disabled={!!evaluatingId}
@@ -965,6 +1107,7 @@ export default function EvalProgressWorkbench({
                     <div className="flex flex-wrap items-center gap-1">
                       <span className="min-w-0 flex-1 truncate text-[12px] font-bold">
                         {s.adminName || "(미상)"}
+                        {s.team ? ` (${s.team})` : ""}
                       </span>
                       {s.hasStt ? (
                         <Badge
@@ -987,6 +1130,7 @@ export default function EvalProgressWorkbench({
                           STT 없음
                         </Badge>
                       )}
+                      <CsatRateBadge rate={s.csatRate} className="shrink-0" />
                       {busy && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[var(--brand)]" />}
                     </div>
                     {!busy &&
@@ -1059,7 +1203,9 @@ export default function EvalProgressWorkbench({
                       </div>
                     )}
                     <div className="mt-0.5 flex flex-wrap gap-x-1.5 text-[10.5px] tabular-nums text-[var(--fg-secondary)]">
-                      {s.callDate && <span>{s.callDate}</span>}
+                      {(s.callStartKst || s.callDate) && (
+                        <span className="whitespace-nowrap">{s.callStartKst || s.callDate}</span>
+                      )}
                       {s.callDurationSec != null && (
                         <span className="inline-flex items-center gap-0.5">
                           <Clock className="h-2.5 w-2.5" />
@@ -1068,8 +1214,11 @@ export default function EvalProgressWorkbench({
                       )}
                       {s.category && <span>· {s.category}</span>}
                     </div>
-                    <div className="mt-0.5 truncate font-mono text-[9.5px] text-[var(--fg-tertiary)]">
-                      {s.conversationId}
+                    <div className="mt-0.5 space-y-0.5 font-mono text-[9.5px] text-[var(--fg-tertiary)]">
+                      <div className="truncate">{s.conversationId}</div>
+                      {s.phoneInquiryId ? (
+                        <div className="truncate">inquiry {s.phoneInquiryId}</div>
+                      ) : null}
                     </div>
                     </button>
                     <button
@@ -1122,22 +1271,30 @@ export default function EvalProgressWorkbench({
               <CallPlaybackBar
                 conversationId={selectedId}
                 org={org}
-                durationSec={activeResult?.durationSec ?? selected?.callDurationSec}
+                durationSec={
+                  activeResult?.durationSec ?? activeSttOnly?.durationSec ?? selected?.callDurationSec
+                }
                 markers={playbackMarkers}
                 overlays={waveformOverlays}
                 onSeekReady={(fn) => {
                   seekRef.current = fn;
                 }}
               />
+              <CsatPanel
+                conversationId={selectedId}
+                phoneInquiryId={selected?.phoneInquiryId}
+                org={org}
+              />
               <SttReviewPanel
                 conversationId={selectedId}
                 segments={segments}
                 checklist={activeResult?.evaluation?.csChecklist}
                 criteria={activeResult?.promptConfig?.criteria}
+                observeMode={sttOnlyView}
                 reviews={reviews}
                 onSeek={seekToEvidence}
                 evaluating={isEvaluating}
-                sttSource={activeResult?.sttSource}
+                sttSource={activeResult?.sttSource ?? activeSttOnly?.sttSource}
                 progressLabel={
                   progress
                     ? formatProgressWithEta(progress.label, progress.sec, progress.etaSec)
@@ -1335,6 +1492,8 @@ export default function EvalProgressWorkbench({
                           r.criterionId,
                           activeResult?.promptConfig?.criteria,
                         );
+                        const needed = annotationReviewNeeded(r);
+                        const final = needed ? annotationFinalJudgment(r) : null;
                         return (
                           <li key={r.annotationId} className="text-[11.5px] leading-snug">
                             <div className="mb-0.5 flex flex-wrap items-center gap-1">
@@ -1351,20 +1510,12 @@ export default function EvalProgressWorkbench({
                             </div>
                             <div className="flex flex-wrap items-center gap-1 font-semibold">
                               [{r.criterionId}] {label} ·{" "}
-                              <Badge
-                                size="medium"
-                                variant="solid"
-                                tone={reviewNeededTone(annotationReviewNeeded(r))}
-                              >
-                                {reviewNeededLabel(annotationReviewNeeded(r))}
+                              <Badge size="medium" variant="solid" tone={reviewNeededTone(needed)}>
+                                {reviewNeededLabel(needed)}
                               </Badge>
-                              {annotationReviewNeeded(r) ? (
-                                <Badge
-                                  size="medium"
-                                  variant="solid"
-                                  tone={hotColdTone(r.judgment === "cold" ? "cold" : "hot")}
-                                >
-                                  최종 {hotColdLabel(r.judgment === "cold" ? "cold" : "hot")}
+                              {final ? (
+                                <Badge size="medium" variant="solid" tone={finalJudgmentTone(final)}>
+                                  최종 {finalJudgmentLabel(final)}
                                 </Badge>
                               ) : null}
                             </div>

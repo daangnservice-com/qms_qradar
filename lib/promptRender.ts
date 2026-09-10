@@ -86,6 +86,7 @@ export function parseCriteriaJson(raw: string): CsCriterion[] {
       label: String(o.label ?? ""),
       hint,
       fields: fields ?? (hint ? { definition: hint } : {}),
+      reviewScope: o.reviewScope === "conversation" ? "conversation" : o.reviewScope === "occurrence" ? "occurrence" : undefined,
     };
   });
 }

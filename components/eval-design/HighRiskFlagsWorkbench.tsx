@@ -15,6 +15,7 @@ type Draft = {
     minMinutes?: number | null;
     minPercent?: number | null;
     metricKey?: string | null;
+    maxRate?: number | null;
   };
   sortOrder: number;
 };
@@ -23,7 +24,7 @@ const KIND_OPTIONS: { value: HighRiskFlagKind; label: string; hint: string }[] =
   {
     value: "long_call_percentile",
     label: "장콜 (퍼센타일)",
-    hint: "팀·일간 통화시간 상위 N% + 선택적 최소 분",
+    hint: "당일 제외 직전 7일 일별 상위 N% 통화시간의 MA(분) 이상이면 장콜",
   },
   {
     value: "agent_speak_ratio",
@@ -34,6 +35,11 @@ const KIND_OPTIONS: { value: HighRiskFlagKind; label: string; hint: string }[] =
     value: "sentiment_agitated",
     label: "격앙 감지",
     hint: "LLM bool 메트릭(agitated 등)이 true",
+  },
+  {
+    value: "csat_dsat",
+    label: "DSAT (고객 설문)",
+    hint: "상담이력 ID로 매칭한 CSAT 점수가 기준 이하. 설문 미참여 통화는 해당 없음",
   },
 ];
 
@@ -55,6 +61,13 @@ export default function HighRiskFlagsWorkbench() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
+  const [longCallThreshold, setLongCallThreshold] = useState<{
+    thresholdMinutes: number;
+    percentile: number;
+    windowStart: string;
+    windowEnd: string;
+    asOfDate: string;
+  } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -62,8 +75,18 @@ export default function HighRiskFlagsWorkbench() {
     try {
       const res = await fetch("/api/eval-design/high-risk-flags");
       if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as { rules: HighRiskFlagRule[] };
+      const data = (await res.json()) as {
+        rules: HighRiskFlagRule[];
+        longCallThreshold?: {
+          thresholdMinutes: number;
+          percentile: number;
+          windowStart: string;
+          windowEnd: string;
+          asOfDate: string;
+        } | null;
+      };
       setDrafts((data.rules ?? []).map(toDraft));
+      setLongCallThreshold(data.longCallThreshold ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -212,33 +235,47 @@ export default function HighRiskFlagsWorkbench() {
               </div>
 
               {d.kind === "long_call_percentile" && (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  <label className="space-y-1 text-[11px] text-[var(--fg-tertiary)]">
-                    상위 퍼센타일 (%)
-                    <input
-                      type="number"
-                      className="qms-input !h-8 w-full !text-[12px]"
-                      value={d.params.percentile ?? 10}
-                      min={1}
-                      max={50}
-                      onChange={(e) =>
-                        updateParams(i, { percentile: e.target.value === "" ? null : Number(e.target.value) })
-                      }
-                    />
-                  </label>
-                  <label className="space-y-1 text-[11px] text-[var(--fg-tertiary)]">
-                    최소 통화(분, AND · 비우면 미적용)
-                    <input
-                      type="number"
-                      className="qms-input !h-8 w-full !text-[12px]"
-                      value={d.params.minMinutes ?? ""}
-                      min={0}
-                      placeholder="예: 15"
-                      onChange={(e) =>
-                        updateParams(i, { minMinutes: e.target.value === "" ? null : Number(e.target.value) })
-                      }
-                    />
-                  </label>
+                <div className="space-y-2">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="space-y-1 text-[11px] text-[var(--fg-tertiary)]">
+                      상위 퍼센타일 (%)
+                      <input
+                        type="number"
+                        className="qms-input !h-8 w-full !text-[12px]"
+                        value={d.params.percentile ?? 10}
+                        min={1}
+                        max={50}
+                        onChange={(e) =>
+                          updateParams(i, { percentile: e.target.value === "" ? null : Number(e.target.value) })
+                        }
+                      />
+                    </label>
+                    <label className="space-y-1 text-[11px] text-[var(--fg-tertiary)]">
+                      최소 통화(분, AND · 비우면 미적용)
+                      <input
+                        type="number"
+                        className="qms-input !h-8 w-full !text-[12px]"
+                        value={d.params.minMinutes ?? ""}
+                        min={0}
+                        placeholder="예: 15"
+                        onChange={(e) =>
+                          updateParams(i, { minMinutes: e.target.value === "" ? null : Number(e.target.value) })
+                        }
+                      />
+                    </label>
+                  </div>
+                  {longCallThreshold && (
+                    <p className="rounded-md border border-[var(--border)] bg-[var(--bg-secondary)] px-2.5 py-2 text-[11px] text-[var(--fg-secondary)]">
+                      적용 임계값:{" "}
+                      <span className="font-medium text-[var(--fg)]">
+                        {longCallThreshold.thresholdMinutes.toFixed(1)}분
+                      </span>
+                      {" · "}상위 {longCallThreshold.percentile}% 일별 값의 MA
+                      {" · "}
+                      {longCallThreshold.windowStart} ~ {longCallThreshold.windowEnd} (당일 제외)
+                      {" · "}as of {longCallThreshold.asOfDate}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -266,6 +303,22 @@ export default function HighRiskFlagsWorkbench() {
                     />
                   </label>
                 </div>
+              )}
+
+              {d.kind === "csat_dsat" && (
+                <label className="block space-y-1 text-[11px] text-[var(--fg-tertiary)]">
+                  DSAT 기준 점수 (이하)
+                  <input
+                    type="number"
+                    className="qms-input !h-8 w-full !text-[12px]"
+                    value={d.params.maxRate ?? 2}
+                    min={1}
+                    max={5}
+                    onChange={(e) =>
+                      updateParams(i, { maxRate: e.target.value === "" ? null : Number(e.target.value) })
+                    }
+                  />
+                </label>
               )}
 
               {d.kind === "sentiment_agitated" && (

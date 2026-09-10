@@ -7,6 +7,7 @@
 // 클라이언트별:
 //   BigQuery / Speech — ADC 우선. Compute SA에는 교차 프로젝트 BQ·Speech 권한이 없을 수 있다.
 //   GCS               — GOOGLE_SERVICE_ACCOUNT_JSON 있으면 그 SA, 없으면 ADC.
+//   Groups            — 사용자 ADC면 직접 Directory 호출, SA면 DWD+impersonate.
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -102,6 +103,18 @@ function adcWellKnownPath(): string {
     ? resolve(process.env.APPDATA ?? resolve(process.env.USERPROFILE ?? ".", "AppData", "Roaming"), "gcloud")
     : resolve(process.env.HOME ?? ".", ".config", "gcloud");
   return resolve(gcloud, "application_default_credentials.json");
+}
+
+/** ADC JSON peek — `authorized_user` | `service_account` 등. 없으면 undefined. */
+export function peekAdcCredentials(): { type?: string } | undefined {
+  const path = adcWellKnownPath();
+  if (!existsSync(path)) return undefined;
+  try {
+    const obj = JSON.parse(readFileSync(path, "utf8")) as { type?: string };
+    return obj && typeof obj === "object" ? obj : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

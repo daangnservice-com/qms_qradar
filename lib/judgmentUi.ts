@@ -1,12 +1,28 @@
-/** Hot/Cold · AI/수기 뱃지 톤 — 서로 겹치지 않게 고정 */
+/** Hot/Cold/Hold · AI/수기 뱃지 톤 — 서로 겹치지 않게 고정 */
 export type JudgmentBadgeTone = "informative" | "warning" | "neutral" | "brand";
 
-/** Cold = 파랑, Hot = 주황 */
+export type FinalJudgmentKind = "cold" | "hot" | "hold";
+
+/** Cold = 파랑, Hot = 주황, Hold = 회색 */
+export function finalJudgmentTone(v: FinalJudgmentKind | string | boolean): JudgmentBadgeTone {
+  if (v === true || v === "cold") return "informative";
+  if (v === "hold") return "neutral";
+  return "warning";
+}
+
+export function finalJudgmentLabel(v: FinalJudgmentKind | string | boolean): "Cold" | "Hot" | "Hold" {
+  if (v === true || v === "cold") return "Cold";
+  if (v === "hold") return "Hold";
+  return "Hot";
+}
+
+/** @deprecated prefer finalJudgmentTone — cold/hot only */
 export function hotColdTone(coldOrHot: "cold" | "hot" | boolean): "informative" | "warning" {
   const cold = coldOrHot === true || coldOrHot === "cold";
   return cold ? "informative" : "warning";
 }
 
+/** @deprecated prefer finalJudgmentLabel — cold/hot only */
 export function hotColdLabel(coldOrHot: "cold" | "hot" | boolean): "Cold" | "Hot" {
   const cold = coldOrHot === true || coldOrHot === "cold";
   return cold ? "Cold" : "Hot";
@@ -47,8 +63,9 @@ export const SOURCE_AI_TONE: JudgmentBadgeTone = "neutral";
 export const SOURCE_HUMAN_TONE: JudgmentBadgeTone = "brand";
 
 /** 재생바 마커용 CSS 변수 */
-export function hotColdTrackColor(tone: "cold" | "hot" | "best"): string {
+export function hotColdTrackColor(tone: "cold" | "hot" | "best" | "hold"): string {
   if (tone === "cold") return "bg-[var(--info)]";
   if (tone === "best") return "bg-[var(--warning)]";
+  if (tone === "hold") return "bg-[var(--fg-tertiary)]";
   return "bg-[var(--c-carrot-500)]";
 }

@@ -125,6 +125,8 @@ export const REVIEW_NOT_NEEDED_LABEL = "review_not_needed";
 /** 수기 최종 감안 판정. 매트릭스 양성 클래스가 아님. */
 export const FINAL_COLD_LABEL = "cold";
 export const FINAL_HOT_LABEL = "hot";
+/** 문제 상황은 맞지만 Hot/Cold(감안)를 아직 정하지 못함. */
+export const FINAL_HOLD_LABEL = "hold";
 
 /**
  * LLM 평가 JSON → 검토필요 라벨 파싱 규칙.

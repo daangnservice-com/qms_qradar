@@ -6,7 +6,7 @@
 | **평가 항목** | 마스터 기준(CS/직무). helpdesk-x = BQ `vw_evaluation_criterions` |
 | **항목 판정** | 케이스에 대한 평가 항목 1개의 결과. 체크리스트 JSON 원소 `{id, violated, reason, evidence}` |
 | **위반** | 항목 판정 중 `violated=true`. 9월부터는 **검토 필요** 플래그로 해석 (최종 Cold가 아님) |
-| **수기 주석** | STT 위에 남긴 수기 검수 1건 (`eval_human_reviews` annotation). `reviewNeeded` + `judgment`(최종 Cold/Hot) |
+| **수기 주석** | STT 위에 남긴 수기 검수 1건 (`eval_human_reviews` annotation). `reviewNeeded` + `judgment`(최종 Cold/Hot/Hold) |
 | **고위험군 플래그** | 케이스 선별 규칙(장콜·발화비율 등). 항목 판정·위반과 다름 |
 | **검수 찜하기** | 이 케이스 검수를 내가 진행 중으로 표시. 다시 누르면 취소. 찜 없이 검수 완료해도 완료자가 검수한 것으로 기록 |
 | **내 평가** | 내가 수기 주석을 1건 이상 남겼거나 검수 찜한, 아직 검수 완료되지 않은 케이스 (`/call-quality/mine`) |
@@ -19,7 +19,7 @@
 | AI 평가 항목 | 항목별 프롬프트 버전(정의·사례). helpdesk-x = `llm_criterion_prompts`. 사이드바에서는 「평가 항목」 하위 |
 | Gate | AI 검토필요 일치율 90% 운영 전환 기준 (Train 정확도 대시보드) |
 | 검토 필요 | AI 체크리스트 위반 검출. 사람이 한 번 더 볼 대상. 콜 라벨 `review_needed` |
-| 최종 Hot/Cold | 수기 감안 판정. 감안 가능=Hot, 불가=Cold. 매트릭스 축이 아님 |
+| 최종 Hot/Cold/Hold | 수기 감안 판정. Hot=감안 가능, Cold=감안 불가, Hold=문제 상황은 맞지만 감안 여부 미정(보류). 매트릭스 축이 아님 |
 | 공백(silence) | ffmpeg/STT 기반 무음·발화 간격. 프롬프트 `{{silences}}` |
 | **평가셋** | (1) production으로 지정된 최종 프롬프트+스키마+바인딩 · (2) 검수 현황에서는 케이스에 쓰인 **프롬프트 버전** 비중 |
 | 버전 라벨 | AI 항목 프롬프트 식별자 `YYMMDD_verN[_추가문구]` (Seoul). 생성자=`updated_by` 이메일 |

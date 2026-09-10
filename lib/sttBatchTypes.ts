@@ -85,6 +85,28 @@ export type SttBatchAgentStat = {
   skipped: number;
 };
 
+/** 스케줄 단위 누적·일별 STT 처리 현황 */
+export type SttBatchScheduleStats = {
+  totals: {
+    selected: number;
+    done: number;
+    failed: number;
+    inProgress: number;
+    skipped: number;
+  };
+  /** 콜 대상일(callDate) 기준, 최신일 먼저 */
+  daily: SttBatchDailyStat[];
+};
+
+export type SttBatchDailyStat = {
+  callDate: string;
+  selected: number;
+  done: number;
+  failed: number;
+  inProgress: number;
+  skipped: number;
+};
+
 export type SttBatchServerHealth = {
   configured: boolean;
   ok: boolean;

@@ -301,6 +301,45 @@ export async function enqueueLocalSttJob(input: {
   };
 }
 
+/** 다시 올리지 않고 붙일 수 있는 원격 상태. failed·canceled·canceling은 재시도 대상이라 뺀다. */
+const REUSABLE_REMOTE = ["done", "running", "queued"];
+
+/**
+ * 같은 conversation으로 로컬 STT에 이미 살아 있거나 끝난 잡이 있으면 그 id를 돌려준다.
+ * 오디오를 다시 받고 올리는 비용을 아끼고, 같은 콜을 두 번 전사하지 않게 한다.
+ */
+export async function findReusableLocalSttJob(conversationId: string): Promise<LocalSttEnqueueResult | null> {
+  const base = localSttBaseUrl();
+  const cid = conversationId.trim();
+  if (!base || !cid) return null;
+  const url = `${joinUrl(base, jobsPath())}?client_ref=${encodeURIComponent(cid)}&limit=20`;
+  const resp = await fetch(url, { headers: { ...authHeaders() }, signal: AbortSignal.timeout(15_000) });
+  if (!resp.ok) return null;
+  return pickReusableLocalSttJob(await readJson(resp), cid);
+}
+
+/**
+ * 목록 응답에서 재사용할 잡을 고른다. 끝난 잡 > 도는 잡 > 대기 잡.
+ * client_ref 필터를 모르는 구버전 서버가 전체 목록을 줘도 안전하도록 client_ref를 다시 확인한다.
+ */
+export function pickReusableLocalSttJob(
+  body: Record<string, unknown> | null,
+  conversationId: string,
+): LocalSttEnqueueResult | null {
+  const list = body && Array.isArray(body.jobs) ? (body.jobs as unknown[]) : [];
+  let best: { rank: number; id: string; status: string } | null = null;
+  for (const raw of list) {
+    const j = obj(raw);
+    if (!j || str(j.client_ref) !== conversationId) continue;
+    const id = str(j.id) ?? str(j.job_id);
+    const status = (str(j.status) ?? "").toLowerCase();
+    const rank = REUSABLE_REMOTE.indexOf(status);
+    if (!id || rank < 0) continue;
+    if (!best || rank < best.rank) best = { rank, id, status };
+  }
+  return best ? { remoteJobId: best.id, status: best.status } : null;
+}
+
 export type LocalSttRemoteStatus = "queued" | "running" | "done" | "failed" | "canceled" | "unknown";
 
 export type LocalSttJobView = {

@@ -1,11 +1,10 @@
 import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
 import { authOptions } from "@/lib/auth";
-import { canAccessAnyCallQuality } from "@/lib/adminEmails";
-
+import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
 async function gate() {
   const session = await getServerSession(authOptions);
-  if (!canAccessAnyCallQuality(session?.user?.email)) redirect("/");
+  if (!await ensureSessionCanAccessAnyCallQuality(session)) redirect("/");
 }
 
 export default async function ResultsLayout({ children }: { children: React.ReactNode }) {

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { orgFromParam, canAccessOrg } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessOrg } from "@/lib/sessionAccessServer";
+import { orgFromParam } from "@/lib/callQualityOrg";
 import { markReviewComplete } from "@/lib/evalResultStore";
 import { releaseReviewClaim } from "@/lib/evalReviewClaimStore";
 
@@ -21,7 +22,7 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   const org = orgFromParam(body.org);
-  if (!canAccessOrg(org, email)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!await ensureSessionCanAccessOrg(org, session)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const conversationId = String(body.conversationId ?? "").trim();
   if (!conversationId) {

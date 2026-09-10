@@ -1,6 +1,7 @@
 import { ensureLocalQaAudio, removeLocalQaAudio, cleanupPaths } from "./qaAudio";
 import {
   enqueueLocalSttJob,
+  findReusableLocalSttJob,
   getLocalSttHealth,
   getLocalSttJob,
   getLocalSttResult,
@@ -11,7 +12,6 @@ import { addDaysYmd, currentDateKst } from "./sttBatchKst";
 import { listSttBatchCandidates, pickNPerAgent } from "./sttBatchSelect";
 import {
   createSttBatchRun,
-  findSttBatchJobByRemoteId,
   finishSttBatchRun,
   hasActiveRun,
   listSttBatchState,
@@ -90,64 +90,131 @@ export async function startSttBatchRun(opts: {
     })),
   });
 
-  void processRun(run.id, jobs).catch((e) => {
+  void processRun(run.id).catch((e) => {
     console.error("[stt-batch] processRun", e);
   });
   return run;
 }
 
+/**
+ * run별 업로드 워커. 재진입·중복 시작을 막기 위해 Promise를 공유한다.
+ * 라우트 번들·HMR마다 모듈이 따로 평가되므로 모듈 변수가 아니라 프로세스(globalThis)에 둔다.
+ */
+const g = globalThis as typeof globalThis & {
+  __qradarSttUploadingRuns?: Map<string, Promise<void>>;
+  __qradarSttHarvesting?: { on: boolean };
+};
+const uploadingRuns = (g.__qradarSttUploadingRuns ??= new Map<string, Promise<void>>());
+const harvestFlag = (g.__qradarSttHarvesting ??= { on: false });
+
 /** 업로드가 중간에 끊긴 run의 pending_upload 잡을 이어서 넣는다. */
 export async function resumePendingSttBatchUploads(runId: string): Promise<void> {
-  const { jobs } = await listSttBatchState();
-  const pending = jobs.filter((j) => j.runId === runId && j.status === "pending_upload");
-  await processRun(runId, pending);
+  await processRun(runId);
 }
 
-async function processRun(runId: string, jobs: SttBatchJob[]): Promise<void> {
-  const pending = jobs.filter((j) => j.status === "pending_upload");
-  try {
-    await mapPool(pending, UPLOAD_CONCURRENCY, async (job) => {
-      try {
-        const audio = await ensureLocalQaAudio(job.conversationId);
-        try {
-          const enq = await enqueueLocalSttJob({
-            conversationId: job.conversationId,
-            audioPath: audio.wavPath,
-          });
-          await patchSttBatchJob(job.id, {
-            status: "queued",
-            remoteJobId: enq.remoteJobId,
-            queuedAt: new Date().toISOString(),
-            error: null,
-          });
-        } finally {
-          await removeLocalQaAudio(job.conversationId);
-          await cleanupPaths(audio.tempPaths);
-        }
-      } catch (e) {
-        await patchSttBatchJob(job.id, {
-          status: "failed",
-          error: e instanceof Error ? e.message : String(e),
-          finishedAt: new Date().toISOString(),
-        });
-      }
-    });
-    await finishSttBatchRun(runId, { status: "completed" });
-  } catch (e) {
-    await finishSttBatchRun(runId, {
-      status: "failed",
-      error: e instanceof Error ? e.message : String(e),
+/** pending_upload가 남은 run을 재개한다. 배포/재시작으로 processRun이 죽은 뒤 스케줄러가 다시 올린다. */
+export async function resumeAllPendingSttBatchUploads(): Promise<number> {
+  if (!localSttConfigured()) return 0;
+  const { jobs } = await listSttBatchState();
+  const pendingByRun = new Map<string, number>();
+  for (const j of jobs) {
+    if (j.status !== "pending_upload") continue;
+    pendingByRun.set(j.runId, (pendingByRun.get(j.runId) ?? 0) + 1);
+  }
+  let kicked = 0;
+  for (const [runId, n] of pendingByRun) {
+    if (uploadingRuns.has(runId)) continue;
+    kicked += 1;
+    console.log(`[stt-batch] resuming pending uploads run=${runId} count=${n}`);
+    void processRun(runId).catch((e) => {
+      console.error(`[stt-batch] resume processRun run=${runId}`, e);
     });
   }
+  return kicked;
 }
 
-let harvesting = false;
+async function processRun(runId: string): Promise<void> {
+  const existing = uploadingRuns.get(runId);
+  if (existing) return existing;
+
+  const work = (async () => {
+    try {
+      const { jobs, runs } = await listSttBatchState();
+      const pending = jobs.filter((j) => j.runId === runId && j.status === "pending_upload");
+      if (pending.length === 0) {
+        const run = runs.find((r) => r.id === runId);
+        const stillActive = jobs.some(
+          (j) => j.runId === runId && (j.status === "queued" || j.status === "running"),
+        );
+        // 업로드 워커만 죽은 채 run이 running으로 남은 경우 정리
+        if (run?.status === "running" && !stillActive) {
+          await finishSttBatchRun(runId, { status: "completed" });
+        }
+        return;
+      }
+
+      await mapPool(pending, UPLOAD_CONCURRENCY, async (job) => {
+        try {
+          // 같은 콜이 로컬 STT에 이미 살아 있거나 끝나 있으면 다시 받지도 올리지도 않고 그 잡을 붙인다.
+          const live = await findReusableLocalSttJob(job.conversationId);
+          if (live) {
+            await patchSttBatchJob(job.id, {
+              status: "queued",
+              remoteJobId: live.remoteJobId,
+              queuedAt: new Date().toISOString(),
+              error: null,
+            });
+            return;
+          }
+          const audio = await ensureLocalQaAudio(job.conversationId);
+          try {
+            const enq = await enqueueLocalSttJob({
+              conversationId: job.conversationId,
+              audioPath: audio.wavPath,
+            });
+            await patchSttBatchJob(job.id, {
+              status: "queued",
+              remoteJobId: enq.remoteJobId,
+              queuedAt: new Date().toISOString(),
+              error: null,
+            });
+          } finally {
+            await removeLocalQaAudio(job.conversationId);
+            await cleanupPaths(audio.tempPaths);
+          }
+        } catch (e) {
+          await patchSttBatchJob(job.id, {
+            status: "failed",
+            error: e instanceof Error ? e.message : String(e),
+            finishedAt: new Date().toISOString(),
+          });
+        }
+      });
+
+      const after = await listSttBatchState();
+      const stillPending = after.jobs.some((j) => j.runId === runId && j.status === "pending_upload");
+      if (!stillPending) {
+        await finishSttBatchRun(runId, { status: "completed" });
+      }
+    } catch (e) {
+      await finishSttBatchRun(runId, {
+        status: "failed",
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      uploadingRuns.delete(runId);
+    }
+  })();
+
+  uploadingRuns.set(runId, work);
+  return work;
+}
 
 /** 큐에 넣어 둔 잡의 상태를 로컬 STT 서버에서 회수한다. 전사를 기다리지 않고 폴링만 한다. */
 export async function harvestSttBatchJobs(): Promise<number> {
   if (!localSttConfigured()) return 0;
-  if (harvesting) return 0;
-  harvesting = true;
+  if (harvestFlag.on) return 0;
+  harvestFlag.on = true;
   let updated = 0;
   try {
     const health = await getLocalSttHealth();
@@ -164,7 +231,7 @@ export async function harvestSttBatchJobs(): Promise<number> {
   } catch (e) {
     console.warn("[stt-batch] harvest failed:", e instanceof Error ? e.message : e);
   } finally {
-    harvesting = false;
+    harvestFlag.on = false;
   }
   return updated;
 }
@@ -242,6 +309,9 @@ async function harvestOneJob(job: SttBatchJob): Promise<boolean> {
       progress: view.progress,
       stage: view.stage,
       durationSec: view.durationSec ?? job.durationSec,
+      // 실패로 잘못 닫혔던 잡이 콜백으로 되살아나는 경우를 위해 흔적을 지운다.
+      error: null,
+      finishedAt: null,
     });
     return true;
   } catch (e) {
@@ -253,9 +323,22 @@ async function harvestOneJob(job: SttBatchJob): Promise<boolean> {
   }
 }
 
+/**
+ * 콜백으로 들어온 원격 잡을 회수한다. failed로 닫힌 잡도 다시 본다 — 서버가 잠깐 안 보였거나
+ * 엉뚱한 서버가 404를 준 탓에 실패 처리됐어도, 원격 잡이 살아서 끝났다면 결과를 받아야 한다.
+ * 같은 원격 잡을 여러 qradar 잡이 가리킬 수 있어(재선정 후 재사용) 모두 갱신한다.
+ */
 export async function harvestSttBatchJobByRemoteId(remoteJobId: string): Promise<boolean> {
-  const job = await findSttBatchJobByRemoteId(remoteJobId);
-  if (!job) return false;
-  if (job.status === "done" || job.status === "failed" || job.status === "skipped") return true;
-  return harvestOneJob(job);
+  const id = remoteJobId.trim();
+  if (!id) return false;
+  const { jobs } = await listSttBatchState();
+  const targets = jobs.filter(
+    (j) => j.remoteJobId === id && j.status !== "done" && j.status !== "skipped",
+  );
+  if (targets.length === 0) return jobs.some((j) => j.remoteJobId === id);
+  let changed = false;
+  for (const job of targets) {
+    if (await harvestOneJob(job)) changed = true;
+  }
+  return changed;
 }

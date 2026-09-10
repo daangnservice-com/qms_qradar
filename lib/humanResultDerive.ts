@@ -1,9 +1,15 @@
 import {
   annotationFinalCold,
+  annotationFinalHold,
   annotationReviewNeeded,
   type EvalReviewAnnotation,
 } from "./evalReviewTypes";
-import { DEFAULT_RESULT_PARSE_CONFIG, FINAL_COLD_LABEL, FINAL_HOT_LABEL } from "./promptTypes";
+import {
+  DEFAULT_RESULT_PARSE_CONFIG,
+  FINAL_COLD_LABEL,
+  FINAL_HOLD_LABEL,
+  FINAL_HOT_LABEL,
+} from "./promptTypes";
 import { canonicalizeReviewNeededLabel, deriveEvalLabel, labelsMatch } from "./resultParse";
 import type { ChecklistResult } from "./types";
 
@@ -80,7 +86,7 @@ export function deriveHumanReviewNeededLabel(
 
 /**
  * 수기 최종 Cold(감안 불가) criterion id.
- * 미터치 AI violated → Cold. 과검출·감안 Hot이면 제거. + 수기는 judgment 따름.
+ * 미터치 AI violated → Cold. 과검출·감안 Hot·Hold면 제거. + 수기는 judgment 따름.
  */
 export function deriveHumanViolatedIds(
   checklist: ChecklistResult[],
@@ -97,13 +103,32 @@ export function deriveHumanViolatedIds(
   return human;
 }
 
-/** 최종 부적합 1개 이상이면 cold, 없으면 hot */
+/**
+ * 수기 최종 Hold(잘 모르겠음) criterion id.
+ * 미터치 AI는 Cold로 시드하므로 Hold는 명시 검수만.
+ */
+export function deriveHumanHoldIds(
+  _checklist: ChecklistResult[],
+  reviews: EvalReviewAnnotation[],
+): Set<number> {
+  const human = new Set<number>();
+  for (const r of latestReviewsByCriterion(reviews)) {
+    if (annotationFinalHold(r)) human.add(r.criterionId);
+  }
+  return human;
+}
+
+/**
+ * 콜 최종 라벨. Cold(1개+) > Hold(1개+) > Hot.
+ * 미터치 AI violated는 Cold로 시드.
+ */
 export function deriveHumanResultLabel(
   checklist: ChecklistResult[],
   reviews: EvalReviewAnnotation[],
 ): string {
-  const humanIds = deriveHumanViolatedIds(checklist, reviews);
-  return humanIds.size ? FINAL_COLD_LABEL : FINAL_HOT_LABEL;
+  if (deriveHumanViolatedIds(checklist, reviews).size) return FINAL_COLD_LABEL;
+  if (deriveHumanHoldIds(checklist, reviews).size) return FINAL_HOLD_LABEL;
+  return FINAL_HOT_LABEL;
 }
 
 type LiveHumanRow = {
@@ -114,13 +139,13 @@ type LiveHumanRow = {
   match: boolean | null;
   checklistJson?: string | null;
   resultJson?: string | null;
-  /** 수기 최종 Cold/Hot. 조회 시 파생. */
+  /** 수기 최종 Cold/Hot/Hold. 조회 시 파생. */
   humanFinalLabel?: string;
 };
 
 /**
  * call_eval 수기 라벨은 저장 스냅샷이 아니라 현재 검수로 파생.
- * humanResult = 검토필요, humanFinalLabel = 최종 Cold/Hot.
+ * humanResult = 검토필요, humanFinalLabel = 최종 Cold/Hot/Hold.
  * qa_eval(Train 골드)은 저장된 human_result 를 유지하되 라벨만 검토필요 축으로 정규화.
  * 검수 미완료면 라벨을 비움.
  */
@@ -133,7 +158,11 @@ export function overlayLiveHumanResult<T extends LiveHumanRow>(
     const humanResult = canonicalizeReviewNeededLabel(row.humanResult) || row.humanResult;
     const storedFinal =
       row.humanFinalLabel ||
-      (row.humanResult === FINAL_COLD_LABEL || row.humanResult === FINAL_HOT_LABEL ? row.humanResult : "");
+      (row.humanResult === FINAL_COLD_LABEL ||
+      row.humanResult === FINAL_HOT_LABEL ||
+      row.humanResult === FINAL_HOLD_LABEL
+        ? row.humanResult
+        : "");
     return {
       ...row,
       aiLabel,

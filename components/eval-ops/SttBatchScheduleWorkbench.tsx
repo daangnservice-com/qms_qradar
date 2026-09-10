@@ -14,11 +14,13 @@ import {
 import { Text } from "@seed-design/react";
 import type {
   SttBatchAgentStat,
+  SttBatchDailyStat,
   SttBatchJob,
   SttBatchJobStatus,
   SttBatchRun,
   SttBatchSchedule,
   SttBatchScheduleInput,
+  SttBatchScheduleStats,
   SttBatchServerHealth,
 } from "@/lib/sttBatchTypes";
 
@@ -28,6 +30,7 @@ type Board = {
   latestRun: SttBatchRun | null;
   jobs: SttBatchJob[];
   agents: SttBatchAgentStat[];
+  stats: SttBatchScheduleStats | null;
   targetCallDate: string | null;
   health: SttBatchServerHealth;
 };
@@ -274,6 +277,9 @@ export default function SttBatchScheduleWorkbench() {
   const jobs = board?.jobs ?? [];
   const agents = board?.agents ?? [];
   const latestRun = board?.latestRun ?? null;
+  const stats = board?.stats;
+  const daily = stats?.daily ?? [];
+  const totals = stats?.totals;
 
   return (
     <div className="mx-auto max-w-[1400px] space-y-4 p-6">
@@ -465,21 +471,69 @@ export default function SttBatchScheduleWorkbench() {
                 </div>
 
                 <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                  <Kpi label="선택" value={latestRun?.selectedCount ?? 0} hint="이번 실행에서 고른 콜" />
-                  <Kpi label="STT 큐" value={latestRun?.queuedCount ?? jobs.filter((j) => j.status === "queued").length} />
-                  <Kpi label="실패" value={latestRun?.failedCount ?? jobs.filter((j) => j.status === "failed").length} />
+                  <Kpi label="누적 전사 완료" value={totals?.done ?? 0} hint="이 스케줄로 STT가 끝난 콜" />
+                  <Kpi label="누적 실패" value={totals?.failed ?? 0} />
+                  <Kpi label="진행 중" value={totals?.inProgress ?? 0} hint="업로드·큐·전사 중" />
+                  <Kpi label="누적 선택" value={totals?.selected ?? 0} hint="지금까지 고른 콜 합" />
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <Kpi label="이번 선택" value={latestRun?.selectedCount ?? 0} hint="최신 실행에서 고른 콜" />
+                  <Kpi label="이번 STT 큐" value={latestRun?.queuedCount ?? jobs.filter((j) => j.status === "queued").length} />
+                  <Kpi label="이번 실패" value={latestRun?.failedCount ?? jobs.filter((j) => j.status === "failed").length} />
                   <Kpi
-                    label="실행"
+                    label="최신 실행"
                     value={latestRun ? 1 : 0}
                     hint={latestRun ? `${latestRun.trigger === "manual" ? "수동" : "스케줄"} · ${latestRun.status}` : "아직 없음"}
                   />
                 </div>
               </section>
 
+              {daily.length > 0 ? (
+                <section className="qms-card overflow-hidden">
+                  <div className="border-b border-[var(--border-subtle)] px-4 py-3">
+                    <p className="text-[13px] font-semibold">일별 처리</p>
+                    <p className="text-[11px] text-[var(--fg-tertiary)]">콜 대상일 기준 · 전사 완료 건수</p>
+                  </div>
+                  <div className="px-4 pt-4">
+                    <DailyDoneBars daily={daily} />
+                  </div>
+                  <div className="mt-2 overflow-x-auto border-t border-[var(--border-subtle)]">
+                    <table className="w-full min-w-[560px] text-left text-[12px]">
+                      <thead className="bg-[var(--bg-muted)] text-[var(--fg-tertiary)]">
+                        <tr>
+                          <th className="px-4 py-2 font-medium">콜 일자</th>
+                          <th className="px-4 py-2 font-medium">선택</th>
+                          <th className="px-4 py-2 font-medium">전사 완료</th>
+                          <th className="px-4 py-2 font-medium">실패</th>
+                          <th className="px-4 py-2 font-medium">진행 중</th>
+                          <th className="px-4 py-2 font-medium">완료율</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[var(--border-subtle)]">
+                        {daily.map((d) => {
+                          const rate = d.selected > 0 ? Math.round((d.done / d.selected) * 100) : 0;
+                          return (
+                            <tr key={d.callDate}>
+                              <td className="px-4 py-2.5 font-medium tabular-nums">{d.callDate}</td>
+                              <td className="px-4 py-2.5 tabular-nums">{d.selected}</td>
+                              <td className="px-4 py-2.5 tabular-nums text-emerald-700">{d.done}</td>
+                              <td className="px-4 py-2.5 tabular-nums text-red-600">{d.failed}</td>
+                              <td className="px-4 py-2.5 tabular-nums">{d.inProgress}</td>
+                              <td className="px-4 py-2.5 tabular-nums text-[var(--fg-tertiary)]">{rate}%</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              ) : null}
+
               <section className="qms-card overflow-hidden">
                 <div className="border-b border-[var(--border-subtle)] px-4 py-3">
                   <p className="text-[13px] font-semibold">구성원별</p>
-                  <p className="text-[11px] text-[var(--fg-tertiary)]">구성원당 {selected.perAgentCount}콜</p>
+                  <p className="text-[11px] text-[var(--fg-tertiary)]">구성원당 {selected.perAgentCount}콜 · 최신 실행</p>
                 </div>
                 {agents.length === 0 ? (
                   <p className="px-4 py-6 text-[12px] text-[var(--fg-tertiary)]">이번 실행 데이터가 없습니다.</p>
@@ -736,6 +790,31 @@ function Kpi({
         {label}
       </p>
       <p className="mt-0.5 text-[20px] font-bold tracking-tight text-[var(--fg-primary)]">{value}</p>
+    </div>
+  );
+}
+
+/** 일별 전사 완료 막대 (외부 차트 라이브러리 없이 SVG 대체). */
+function DailyDoneBars({ daily }: { daily: SttBatchDailyStat[] }) {
+  // 차트는 시간순(오래된 → 최신)
+  const rows = [...daily].reverse();
+  const max = Math.max(1, ...rows.map((d) => d.done));
+  return (
+    <div className="flex items-end gap-1.5 overflow-x-auto pb-1" style={{ height: 140 }}>
+      {rows.map((d) => (
+        <div
+          key={d.callDate}
+          className="flex min-w-[28px] flex-1 flex-col items-center justify-end gap-1"
+          title={`${d.callDate} · 완료 ${d.done} · 실패 ${d.failed} · 진행 ${d.inProgress}`}
+        >
+          <span className="text-[10px] tabular-nums text-[var(--fg-tertiary)]">{d.done || ""}</span>
+          <div
+            className="w-full max-w-[36px] rounded-t bg-[var(--brand)]/80 transition-all hover:bg-[var(--brand)]"
+            style={{ height: `${(d.done / max) * 100}px` }}
+          />
+          <span className="whitespace-nowrap text-[9px] text-[var(--fg-tertiary)]">{d.callDate.slice(5)}</span>
+        </div>
+      ))}
     </div>
   );
 }

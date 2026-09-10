@@ -50,6 +50,19 @@ describe("callQualityDeepLink", () => {
     expect(url).not.toContain("observe");
   });
 
+  it("builds eval deep link with inquiry_id only", () => {
+    const url = buildCallQualityDeepLink({ inquiryId: "742375" });
+    expect(url).toBe("/call-quality?inquiry_id=742375");
+    expect(url).not.toContain("observe");
+  });
+
+  it("parses inquiry_id without observe for eval screen", () => {
+    const deep = parseCallQualityDeepLink("inquiry_id=742375&autoStt=1");
+    expect(deep.inquiryId).toBe("742375");
+    expect(deep.observe).toBe(false);
+    expect(deep.autoStt).toBe(true);
+  });
+
   it("isTruthyQueryParam", () => {
     expect(isTruthyQueryParam("1")).toBe(true);
     expect(isTruthyQueryParam("true")).toBe(true);

@@ -18,6 +18,8 @@ const CID = "json_value(case_content, '$.genesys_conversation_id')";
 // safe_cast: 포맷이 어긋난 행은 에러 대신 null(그 행은 날짜 필터에서 제외).
 const CALL_START_TS = "safe_cast(json_value(case_content, '$.call_start') as timestamp)";
 const CALL_DATE_KST = `format_date('%F', date(${CALL_START_TS}, 'Asia/Seoul'))`;
+// 목록 표시용 통화 시작 일시(KST, 초까지). 필터·배치는 날짜만 쓰는 CALL_DATE_KST 그대로.
+const CALL_START_KST = `format_datetime('%F %T', datetime(${CALL_START_TS}, 'Asia/Seoul'))`;
 
 // 통화 길이(초). call_end-call_start를 우선 쓰고, 안 되면 minutes_taken(분)으로 폴백.
 function callDurationSec(callStart: unknown, callEnd: unknown, minutesTaken: unknown): number | null {
@@ -30,6 +32,24 @@ function callDurationSec(callStart: unknown, callEnd: unknown, minutesTaken: unk
 }
 
 const cleanArr = (a?: string[]): string[] => (a ?? []).map((s) => s.trim()).filter(Boolean);
+
+/** cases 목록 캐시 키 — 라우트 전용 필터(analyzed/highRisk 등)는 여기 안 들어온다. */
+function samplesCacheKey(filters: SampleFilters, limit: number): string {
+  const sorted = (a?: string[]) => cleanArr(a).slice().sort();
+  return `eval-samples:${JSON.stringify({
+    conversationIds: sorted(filters.conversationIds),
+    phoneInquiryIds: sorted(filters.phoneInquiryIds),
+    adminUserIds: sorted(filters.adminUserIds),
+    adminNames: sorted(filters.adminNames),
+    teams: sorted(filters.teams),
+    categories: sorted(filters.categories),
+    callDateStart: filters.callDateStart ?? null,
+    callDateEnd: filters.callDateEnd ?? null,
+    callLenMin: filters.callLenMin ?? null,
+    callLenMax: filters.callLenMax ?? null,
+    limit,
+  })}`;
+}
 
 // 필터 드롭다운용 옵션. 팀↔상담사(닉네임) 페어(연동 드롭다운용) + 카테고리 고유값.
 export async function listFilterOptions(): Promise<{ teamAgents: { team: string; name: string }[]; categories: string[] }> {
@@ -62,6 +82,12 @@ export async function listFilterOptions(): Promise<{ teamAgents: { team: string;
 }
 
 export async function listEvaluationSamples(filters: SampleFilters = {}, limit = 100): Promise<EvaluationSample[]> {
+  return cached(samplesCacheKey(filters, limit), SERVER_CACHE_TTL.evalSamples, () =>
+    listEvaluationSamplesUncached(filters, limit),
+  );
+}
+
+async function listEvaluationSamplesUncached(filters: SampleFilters = {}, limit = 100): Promise<EvaluationSample[]> {
   // 값이 있는 필터만 동적으로 절/파라미터를 추가한다(빈 필터=기본 쿼리, 빈배열/null 파라미터 회피).
   const where: string[] = ["year_month >= '2026-04-01'", `${CID} is not null`];
   const params: Record<string, unknown> = { limit };
@@ -110,6 +136,7 @@ export async function listEvaluationSamples(filters: SampleFilters = {}, limit =
       json_value(case_content, '$.카테고리')                as category,
       json_value(case_content, '$.call_start')              as call_start,
       ${CALL_DATE_KST}                                      as call_date_kst,
+      ${CALL_START_KST}                                     as call_start_kst,
       json_value(case_content, '$.call_end')                as call_end,
       json_value(case_content, '$.minutes_taken')           as minutes_taken,
       json_value(case_content, '$.상담이력')                as phone_inquiry_content
@@ -136,6 +163,7 @@ export async function listEvaluationSamples(filters: SampleFilters = {}, limit =
     category: r.category ? String(r.category) : "",
     // 표시도 KST 기준. UTC 앞 10자를 쓰면 필터 결과와 화면 날짜가 어긋난다.
     callDate: r.call_date_kst ? String(r.call_date_kst) : "",
+    callStartKst: r.call_start_kst ? String(r.call_start_kst) : "",
     contentSnippet: r.phone_inquiry_content ? String(r.phone_inquiry_content).slice(0, SNIPPET_MAX) : "",
     callDurationSec: callDurationSec(r.call_start, r.call_end, r.minutes_taken),
     analyzed: false, // 라우트에서 저장 결과 조회 후 채운다
@@ -176,6 +204,37 @@ export async function listCaseMetaByConversationIds(
     console.warn("[evaluationSamples] listCaseMeta:", e instanceof Error ? e.message : e);
   }
   return out;
+}
+
+/** Genesys conversation_id → 상담이력 ID(phone_inquiry_id). CSAT 매핑처럼 역방향이 필요할 때. */
+export async function resolvePhoneInquiryIdByConversationId(
+  conversationId: string,
+): Promise<string | null> {
+  const cid = conversationId.trim();
+  if (!cid) return null;
+  const query = `
+    select json_value(case_content, '$.상담이력 ID') as phone_inquiry_id
+    from ${CASES_SQL}
+    where ${CID} = @cid
+      and json_value(case_content, '$.상담이력 ID') is not null
+    order by inquiry_created_at_kst desc
+    limit 1
+  `;
+  try {
+    const [rows] = await getBQ().query({
+      query,
+      params: { cid },
+      ...(LOCATION ? { location: LOCATION } : {}),
+    });
+    const id = String((rows as Record<string, unknown>[])[0]?.phone_inquiry_id ?? "").trim();
+    return id || null;
+  } catch (e) {
+    console.warn(
+      "[evaluationSamples] resolvePhoneInquiryIdByConversationId:",
+      e instanceof Error ? e.message : e,
+    );
+    return null;
+  }
 }
 
 /** 상담이력 ID(phone_inquiry_id) → Genesys conversation_id */

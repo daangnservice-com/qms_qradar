@@ -3,8 +3,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, ClipboardCheck } from "lucide-react";
 import { authOptions } from "@/lib/auth";
-import { canAccessAnyCallQuality } from "@/lib/adminEmails";
-import { canAccessOrg } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessAnyCallQuality, ensureSessionCanAccessOrg } from "@/lib/sessionAccessServer";
 import { getAnalysisById } from "@/lib/analysisStore";
 import ResultView from "@/components/ResultView";
 
@@ -14,11 +13,11 @@ export const dynamic = "force-dynamic";
 // 저장된 분석 결과 1건의 공유/북마크용 전체 화면. 결과의 조직 권한이 있는 계정만.
 export default async function AnalysisResultPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getServerSession(authOptions);
-  if (!canAccessAnyCallQuality(session?.user?.email)) redirect("/");
+  if (!await ensureSessionCanAccessAnyCallQuality(session)) redirect("/");
 
   const { id } = await params;
   const data = await getAnalysisById(id);
-  const allowed = !data || canAccessOrg(data.org, session?.user?.email);
+  const allowed = !data || await ensureSessionCanAccessOrg(data.org, session);
   // 페이팀 UI는 제거됐지만(백엔드는 그대로), 공유 URL을 열었을 때도 뒤로가기는 성장문화실 목록으로.
   const backHref = "/call-quality";
   const backLabel = "평가 진행 목록으로";

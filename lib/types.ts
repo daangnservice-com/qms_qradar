@@ -108,6 +108,15 @@ export interface SampleFilters {
   reviewStatus?: "completed" | "incomplete";
   /** 고위험군 플래그가 하나라도 있는 통화만 */
   highRiskOnly?: boolean;
+  /**
+   * 고위험 플래그 키 다중 선택. 선택한 것 중 하나라도 해당하면 통과(OR).
+   * 비어 있으면 highRiskOnly(전체 고위험군)만 본다.
+   */
+  highRiskFlagKeys?: string[];
+  /** CSAT 점수 다중 선택(1~5). 비면 미적용 */
+  csatRates?: number[];
+  /** CSAT 설문 미참여 건도 포함(csatRates와 OR) */
+  csatIncludeNone?: boolean;
   /** STT 전사 존재 여부. 미지정이면 전체 */
   sttStatus?: "present" | "absent";
   /**
@@ -125,6 +134,8 @@ export interface EvaluationSample {
   team: string; // 상담사 소속(operator_renewal_team_name)
   category: string; // 카테고리
   callDate: string; // 콜 날짜(call_start를 KST로 변환, YYYY-MM-DD)
+  /** 통화 시작 일시(KST, YYYY-MM-DD HH:MM:SS). 목록 표시용 — 없으면 callDate로 폴백 */
+  callStartKst?: string;
   contentSnippet: string; // 상담이력 미리보기(앞부분)
   callDurationSec: number | null; // 통화 길이(초). call_end-call_start 우선, minutes_taken 폴백
   analyzed: boolean; // AI 평가 완료 여부
@@ -133,8 +144,13 @@ export interface EvaluationSample {
   aiLabel?: string | null;
   /** 수기 검토필요 라벨 (검수 완료 시) */
   humanResult?: string | null;
-  /** 고위험 플래그 키 목록(장콜·발화비율·격앙 등) */
+  /** 고위험 플래그 키 목록(장콜·발화비율·격앙·DSAT 등) */
   highRiskFlagKeys?: string[];
+  /**
+   * 고객 설문(CSAT) 점수 1~5. 설문 미참여 통화는 없음(null).
+   * 상담이력 ID ↔ CSAT inquiry_id 매핑 결과 — lib/csat.ts
+   */
+  csatRate?: number | null;
   /** 검수 찜하기(진행 중) 구성원 이메일 */
   reviewClaimedBy?: string | null;
   reviewClaimedAt?: string | null;

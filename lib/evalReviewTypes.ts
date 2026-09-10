@@ -1,6 +1,7 @@
 import type { CriterionReviewScope } from "./promptTypes";
 
-export type HumanJudgment = "cold" | "hot" | "best";
+/** cold/hot/hold = 검토필요 시 최종 감안 판정. best = Best 사례(검토필요 축 밖). */
+export type HumanJudgment = "cold" | "hot" | "hold" | "best";
 
 /** Best 마크 카테고리 — 수기 Best 선택 시 평가 항목 대신 사용 */
 export const BEST_MARK_CATEGORIES = [
@@ -26,7 +27,7 @@ export function bestMarkLabel(id: string | null | undefined): string {
 }
 
 export function normalizeJudgment(v: unknown): HumanJudgment {
-  if (v === "hot" || v === "best" || v === "cold") return v;
+  if (v === "hot" || v === "best" || v === "cold" || v === "hold") return v;
   return "cold";
 }
 
@@ -52,7 +53,7 @@ export function inferLegacyReviewNeeded(r: {
   comment?: string | null;
 }): boolean | null {
   if (r.judgment === "best") return null;
-  if (r.judgment === "cold") return true;
+  if (r.judgment === "cold" || r.judgment === "hold") return true;
   return commentHasGaman(r.comment);
 }
 
@@ -80,7 +81,7 @@ export function annotationReviewNeeded(r: {
   return inferLegacyReviewNeeded(r) === true;
 }
 
-/** 수기 최종 Cold. 검토 불필요(과검출)이거나 감안 Hot이면 false. */
+/** 수기 최종 Cold. 검토 불필요(과검출)·감안 Hot·Hold면 false. */
 export function annotationFinalCold(r: {
   judgment: HumanJudgment;
   reviewNeeded?: boolean | null;
@@ -88,6 +89,32 @@ export function annotationFinalCold(r: {
   if (r.judgment === "best") return false;
   if (typeof r.reviewNeeded === "boolean" && r.reviewNeeded === false) return false;
   return r.judgment === "cold";
+}
+
+/**
+ * 수기 최종 Hold(잘 모르겠음).
+ * 문제 상황은 맞지만 감안(Hot/Cold)을 아직 정하지 못한 경우.
+ */
+export function annotationFinalHold(r: {
+  judgment: HumanJudgment;
+  reviewNeeded?: boolean | null;
+}): boolean {
+  if (r.judgment !== "hold") return false;
+  if (typeof r.reviewNeeded === "boolean" && r.reviewNeeded === false) return false;
+  return true;
+}
+
+/** 검토필요 시 최종 판정. 불필요·Best면 null. */
+export function annotationFinalJudgment(r: {
+  judgment: HumanJudgment;
+  reviewNeeded?: boolean | null;
+  comment?: string | null;
+}): "cold" | "hot" | "hold" | null {
+  if (!annotationReviewNeeded(r)) return null;
+  if (r.judgment === "cold") return "cold";
+  if (r.judgment === "hold") return "hold";
+  if (r.judgment === "hot") return "hot";
+  return null;
 }
 
 export type EvalReviewAnnotation = {

@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { canAccessAnyCallQuality } from "@/lib/adminEmails";
+import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
 import { listQaReferenceSamples, listLatestQaResults } from "@/lib/qaStore";
 import { getProductionPrompt, listPromptVersions, ensurePromptTables } from "@/lib/promptStore";
 import { growthBq } from "@/lib/bqRefs";
@@ -24,7 +24,7 @@ function parseChecklist(json: string): ChecklistResult[] {
 
 export async function GET() {
   const session = await getServerSession(authOptions);
-  if (!canAccessAnyCallQuality(session?.user?.email)) {
+  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   try {

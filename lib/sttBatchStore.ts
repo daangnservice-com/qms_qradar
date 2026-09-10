@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { clampHour, clampMinute, clampPositiveInt, kstClock } from "./sttBatchKst";
+import { cacheInvalidate, cached, SERVER_CACHE_TTL } from "./serverCache";
 import type { TranscriptSegment } from "./types";
 import type {
   SttBatchJob,
@@ -389,6 +390,49 @@ export function summarizeAgents(
   return [...map.values()].sort((a, b) => a.agentName.localeCompare(b.agentName, "ko"));
 }
 
+function emptyDaily(callDate: string): import("./sttBatchTypes").SttBatchDailyStat {
+  return { callDate, selected: 0, done: 0, failed: 0, inProgress: 0, skipped: 0 };
+}
+
+/** 스케줄에 속한 전체 job의 누적·콜일자별 집계 */
+export function summarizeScheduleStats(
+  jobs: SttBatchJob[],
+  scheduleId: string,
+): import("./sttBatchTypes").SttBatchScheduleStats {
+  const scoped = jobs.filter((j) => j.scheduleId === scheduleId);
+  const totals = { selected: 0, done: 0, failed: 0, inProgress: 0, skipped: 0 };
+  const byDate = new Map<string, import("./sttBatchTypes").SttBatchDailyStat>();
+
+  for (const j of scoped) {
+    totals.selected += 1;
+    const day = byDate.get(j.callDate) ?? emptyDaily(j.callDate);
+    day.selected += 1;
+
+    if (j.status === "done") {
+      totals.done += 1;
+      day.done += 1;
+    } else if (j.status === "failed") {
+      totals.failed += 1;
+      day.failed += 1;
+    } else if (j.status === "skipped") {
+      totals.skipped += 1;
+      day.skipped += 1;
+    } else if (
+      j.status === "pending_upload" ||
+      j.status === "queued" ||
+      j.status === "running"
+    ) {
+      totals.inProgress += 1;
+      day.inProgress += 1;
+    }
+
+    byDate.set(j.callDate, day);
+  }
+
+  const daily = [...byDate.values()].sort((a, b) => b.callDate.localeCompare(a.callDate));
+  return { totals, daily };
+}
+
 export function pendingHarvestJobs(jobs: SttBatchJob[]): SttBatchJob[] {
   return jobs.filter(
     (j) => (j.status === "queued" || j.status === "running") && Boolean(j.remoteJobId),
@@ -427,31 +471,47 @@ export async function saveSttBatchTranscript(input: {
     transcript: input.transcript,
   };
   await writeFile(transcriptPath(input.conversationId), JSON.stringify(payload), "utf8");
+  cacheInvalidate("batch-transcript-ids");
 }
 
-/** 로컬 배치 전사가 있는 conversation_id 집합 */
-export async function listBatchTranscriptConversationIds(): Promise<Set<string>> {
+/** 특정 conversation에 로컬 배치 전사 파일이 있는지 — JSON 파싱 없이 경로 존재만 본다. */
+export async function listBatchTranscriptPresenceByConversationIds(
+  conversationIds: string[],
+): Promise<Set<string>> {
+  const ids = [...new Set(conversationIds.map((s) => s.trim()).filter(Boolean))];
   const out = new Set<string>();
-  try {
-    const files = await readdir(TRANSCRIPT_DIR);
-    for (const f of files) {
-      if (!f.endsWith(".json")) continue;
+  await Promise.all(
+    ids.map(async (id) => {
       try {
-        const raw = await readFile(path.join(TRANSCRIPT_DIR, f), "utf8");
-        const parsed = JSON.parse(raw) as Partial<TranscriptFile>;
-        const cid = String(parsed.conversationId ?? "").trim();
-        const transcript = Array.isArray(parsed.transcript)
-          ? parsed.transcript.filter((t) => (t?.text ?? "").trim().length > 0)
-          : [];
-        if (cid && transcript.length) out.add(cid);
+        await access(transcriptPath(id));
+        out.add(id);
       } catch {
-        /* skip corrupt file */
+        /* missing */
       }
-    }
-  } catch {
-    /* no dir */
-  }
+    }),
+  );
   return out;
+}
+
+/**
+ * 로컬 배치 전사가 있는 conversation_id 집합.
+ * 파일명 stem을 id로 쓴다(저장 시 safeCid). JSON 전량 파싱하지 않는다.
+ */
+export async function listBatchTranscriptConversationIds(): Promise<Set<string>> {
+  return cached("batch-transcript-ids", SERVER_CACHE_TTL.batchTranscriptIds, async () => {
+    const out = new Set<string>();
+    try {
+      const files = await readdir(TRANSCRIPT_DIR);
+      for (const f of files) {
+        if (!f.endsWith(".json")) continue;
+        const stem = f.slice(0, -".json".length).trim();
+        if (stem) out.add(stem);
+      }
+    } catch {
+      /* no dir */
+    }
+    return out;
+  });
 }
 
 /** 배치 STT가 끝난 콜의 전사. 평가 진행의 GCP 온디맨드 호출 대신 재사용한다. */
@@ -503,6 +563,7 @@ export async function wipeSttBatchWork(): Promise<{ jobs: number; runs: number; 
     } catch {
       /* no dir */
     }
+    cacheInvalidate("batch-transcript-ids");
     return { jobs, runs, transcripts };
   });
 }
@@ -519,6 +580,7 @@ export async function deleteSttBatchTranscriptFiles(): Promise<number> {
   } catch {
     /* no dir */
   }
+  cacheInvalidate("batch-transcript-ids");
   return n;
 }
 

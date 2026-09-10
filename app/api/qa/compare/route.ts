@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { canAccessAnyCallQuality } from "@/lib/adminEmails";
+import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
 import { resolveCriterionLabelMap } from "@/lib/criterionStore";
 import { getLatestQaResult, listQaReferenceSamples } from "@/lib/qaStore";
 import { compareCriterionScores } from "@/lib/scoreDetailParse";
@@ -11,7 +11,7 @@ export const maxDuration = 60;
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!canAccessAnyCallQuality(session?.user?.email)) {
+  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   const conversationId = new URL(req.url).searchParams.get("conversationId")?.trim();

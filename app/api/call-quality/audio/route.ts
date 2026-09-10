@@ -1,6 +1,7 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { orgFromParam, canAccessCallQualityPlayback } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessCallQualityPlayback } from "@/lib/sessionAccessServer";
+import { orgFromParam } from "@/lib/callQualityOrg";
 import { loadMonoWav } from "@/lib/callAudioCache";
 
 export const runtime = "nodejs";
@@ -49,7 +50,7 @@ export async function GET(req: Request): Promise<Response> {
 
   const url = new URL(req.url);
   const org = orgFromParam(url.searchParams.get("org"));
-  if (!canAccessCallQualityPlayback(org, session.user.email)) return new Response("Forbidden", { status: 403 });
+  if (!await ensureSessionCanAccessCallQualityPlayback(org, session)) return new Response("Forbidden", { status: 403 });
 
   const conversationId = url.searchParams.get("conversationId") ?? "";
   if (!conversationId) return new Response("conversationId required", { status: 400 });

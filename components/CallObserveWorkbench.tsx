@@ -11,6 +11,7 @@ import { readNdjson } from "@/lib/ndjson";
 import { formatProgressWithEta } from "@/lib/evalEta";
 import CallPlaybackBar from "@/components/CallPlaybackBar";
 import SttReviewPanel from "@/components/SttReviewPanel";
+import CsatPanel from "@/components/CsatPanel";
 import QmsLoadingOverlay from "@/components/QmsLoadingOverlay";
 
 type ObservePayload = {
@@ -235,7 +236,8 @@ export default function CallObserveWorkbench({ org }: { org: CallQualityOrg }) {
               </button>
             ) : null}
           </div>
-        ) : conversationId || phoneInquiryId ? (
+        ) : conversationId ? (
+          // 상담이력 ID는 conversationId와 함께만 세팅된다 — conversation이 잡히기 전엔 아래 "준비 중".
           <section
             ref={centerScrollRef}
             className="mx-auto flex w-full max-w-4xl min-h-0 flex-1 flex-col gap-3 overflow-y-auto"
@@ -250,6 +252,7 @@ export default function CallObserveWorkbench({ org }: { org: CallQualityOrg }) {
                 seekRef.current = fn;
               }}
             />
+            <CsatPanel conversationId={conversationId} phoneInquiryId={phoneInquiryId} org={org} />
             {!hasStt && !sttBusy && !loading ? (
               <div className="qms-run-panel flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
                 <AudioLines className="h-8 w-8 text-[var(--fg-tertiary)]" />

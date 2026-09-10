@@ -33,6 +33,8 @@ describe("bqRefs — dataset split + qradar_ prefix", () => {
     expect(appBq.dataset).toBe(distBq.dataset);
     expect(appBq.tables.usageEvents).toBe("qradar_usage_events");
     expect(promptBq.tables.versions).toBe("qradar_llm_prompt_versions");
+    expect(promptBq.tables.highRiskFlagRules).toBe("qradar_high_risk_flag_rules");
+    expect(promptBq.tables.longCallThresholds).toBe("qradar_long_call_thresholds");
     expect(growthBq.qaEvalResults).toBe("qradar_evaluation_results");
     expect(growthBq.resultsTablePay).toBe("qradar_evaluation_results");
     expect(growthBq.llmCallLogs).toBe("qradar_llm_call_logs");

@@ -121,6 +121,23 @@ describe("deriveHumanViolatedIds / deriveHumanResultLabel (final Cold/Hot)", () 
     ).toBe("hot");
   });
 
+  it("uses Hold when review-needed but 감안 undecided", () => {
+    expect(
+      deriveHumanResultLabel(checklist([1, true]), [
+        review({ source: "ai", criterionId: 1, judgment: "hold", reviewNeeded: true }),
+      ]),
+    ).toBe("hold");
+  });
+
+  it("prefers Cold over Hold at call level", () => {
+    expect(
+      deriveHumanResultLabel(checklist([1, true], [2, true]), [
+        review({ source: "ai", criterionId: 1, judgment: "hold", reviewNeeded: true }),
+        review({ source: "ai", criterionId: 2, judgment: "cold", reviewNeeded: true }),
+      ]),
+    ).toBe("cold");
+  });
+
   it("ignores best marks", () => {
     expect(
       deriveHumanResultLabel(checklist([1, false]), [

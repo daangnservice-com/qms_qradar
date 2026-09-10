@@ -14,6 +14,14 @@ export const SERVER_CACHE_TTL = {
   criteriaBundle: 60 * 1000,
   promptVersions: 60 * 1000,
   mismatchGroups: 2 * 60 * 1000,
+  /** CSAT 선택지 한글 사전 — 사실상 고정값이라 길게 잡는다. */
+  csatChoices: 60 * 60 * 1000,
+  /** 장콜 MA 임계값 — DB as_of_date로 일 1회 갱신, 메모리는 짧게 */
+  longCallThreshold: 10 * 60 * 1000,
+  /** 로컬 배치 STT 파일명 인덱스 */
+  batchTranscriptIds: 2 * 60 * 1000,
+  /** cases 목록 조회 — 동일 필터 재진입 완화 */
+  evalSamples: 45 * 1000,
 } as const;
 
 export async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {

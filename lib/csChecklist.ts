@@ -30,8 +30,16 @@ function item(
   category: string,
   label: string,
   fields: { definition: string; good: string; bad: string; exception: string },
+  opts?: { reviewScope?: CriterionReviewScope },
 ): CsCriterion {
-  return { id, category, label, hint: fields.definition, fields };
+  return {
+    id,
+    category,
+    label,
+    hint: fields.definition,
+    fields,
+    reviewScope: opts?.reviewScope,
+  };
 }
 
 /** BQ 미연결·조회 실패 시 폴백 + UI 라벨 join용 하드코딩 기준. */
@@ -58,13 +66,20 @@ export const CS_CHECKLIST: CsCriterion[] = [
     bad: "CS 티켓 에스컬레이션 할게요. / 어뷰징으로 어드민 조치됐어요.",
     exception: "같은 의미를 쉬운 말로 바로 풀어 설명한 경우는 해당 없음.",
   }),
-  item(410, "예절과 화법", "하나의 상담에서 3회 이상 비전문적 용어 사용 (일상어 또는 습관어 등)", {
-    definition:
-      "습관어·일상어(e.g. '어…','그…','뭐지')가 한 상담에서 3회 이상 반복. 위반 시 evidence에 해당 발화들을 근거로.",
-    good: "확인 중입니다. / 잠시만요, 내용을 다시 보겠습니다.",
-    bad: "어… 그… 뭐지, 어… 그거요. (동일·유사 습관어 3회 이상)",
-    exception: "2회 이하이거나, STT 오인식으로 습관어처럼 보이는 경우.",
-  }),
+  item(
+    410,
+    "예절과 화법",
+    "하나의 상담에서 3회 이상 비전문적 용어 사용 (일상어 또는 습관어 등)",
+    {
+      definition:
+        "습관어·일상어(e.g. '어…','그…','뭐지')가 한 상담에서 3회 이상 반복. 위반 시 evidence에 해당 발화들을 근거로.",
+      good: "확인 중입니다. / 잠시만요, 내용을 다시 보겠습니다.",
+      bad: "어… 그… 뭐지, 어… 그거요. (동일·유사 습관어 3회 이상)",
+      exception: "2회 이하이거나, STT 오인식으로 습관어처럼 보이는 경우.",
+    },
+    // n회 이상 항목: evidence가 여러 발화에 흩어지므로 기본은 상담 단위 일괄 검수
+    { reviewScope: "conversation" },
+  ),
   item(411, "예절과 화법", "상황에 맞지 않은 톤앤매너 표현", {
     definition:
       "강압·명령조, 고객 귀책 단정, 부정어 반복, 과도한 '번거로운 절차' 반복, 자신감 없는 가정형 어투 남발, 당근 시스템을 깎아내리는 표현 등 상황에 맞지 않은 톤앤매너.",

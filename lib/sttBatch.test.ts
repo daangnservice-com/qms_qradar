@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { addDaysYmd, isScheduleDue, kstClock } from "./sttBatchKst";
 import { pickNPerAgent } from "./sttBatchSelect";
-import { pendingHarvestJobs, queuedConversationIds, summarizeAgents } from "./sttBatchStore";
+import { pendingHarvestJobs, queuedConversationIds, summarizeAgents, summarizeScheduleStats } from "./sttBatchStore";
 import type { SttBatchJob } from "./sttBatchTypes";
 
 describe("sttBatchSelect pickNPerAgent", () => {
@@ -95,5 +95,23 @@ describe("sttBatchStore helpers", () => {
       { agentName: "김", team: "A", target: 3, selected: 3, queued: 2, done: 0, failed: 1, skipped: 0 },
       { agentName: "이", team: "B", target: 3, selected: 1, queued: 1, done: 1, failed: 0, skipped: 0 },
     ]);
+  });
+
+  it("summarizeScheduleStats aggregates cumulative and by callDate", () => {
+    const jobs = [
+      { scheduleId: "s1", callDate: "2026-09-01", status: "done" },
+      { scheduleId: "s1", callDate: "2026-09-01", status: "failed" },
+      { scheduleId: "s1", callDate: "2026-09-02", status: "queued" },
+      { scheduleId: "s1", callDate: "2026-09-02", status: "pending_upload" },
+      { scheduleId: "s1", callDate: "2026-09-02", status: "done" },
+      { scheduleId: "s2", callDate: "2026-09-01", status: "done" },
+    ] as SttBatchJob[];
+    expect(summarizeScheduleStats(jobs, "s1")).toEqual({
+      totals: { selected: 5, done: 2, failed: 1, inProgress: 2, skipped: 0 },
+      daily: [
+        { callDate: "2026-09-02", selected: 3, done: 1, failed: 0, inProgress: 2, skipped: 0 },
+        { callDate: "2026-09-01", selected: 2, done: 1, failed: 1, inProgress: 0, skipped: 0 },
+      ],
+    });
   });
 });

@@ -12,6 +12,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import type { EvalReviewAnnotation } from "../lib/evalReviewTypes";
 
 function loadEnvFile(path: string) {
   if (!existsSync(path)) return;
@@ -66,9 +67,9 @@ async function main() {
   const { getBQ } = await import("../lib/bigquery");
   const { growthBq, bqRefsSummary, qradarTable } = await import("../lib/bqRefs");
   const { monthRangeToIso } = await import("../lib/reviewStatusPeriod");
-  const reviewTypes = await import("../lib/evalReviewTypes");
-  const { inferLegacyReviewNeeded, needsLegacyReviewNeededBackfill } = reviewTypes;
-  type EvalReviewAnnotation = reviewTypes.EvalReviewAnnotation;
+  const { inferLegacyReviewNeeded, needsLegacyReviewNeededBackfill } = await import(
+    "../lib/evalReviewTypes"
+  );
   const { listEvalReviewsByConversationIds, saveEvalReview } = await import("../lib/evalReviewStore");
 
   if (!/^\d{4}-\d{2}$/.test(month)) {
