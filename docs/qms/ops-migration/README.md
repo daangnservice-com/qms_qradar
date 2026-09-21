@@ -79,3 +79,4 @@
 - [결과 요약](../results/README.md)
 - [소스 포인터](../sources.md)
 - [BQ 참조](../../../lib/bqRefs.ts)
+- [평가 아이템 키 통일 (dev 컷오버 2026-09-21)](eval-item-key-unification.md)

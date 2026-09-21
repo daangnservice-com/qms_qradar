@@ -1,0 +1,38 @@
+-- 스왑 실패 시 라이브 이름을 되돌린다. stamp 는 당일 백업 접미.
+-- 기본 stamp=20260921
+--
+-- 1) 방금 올린 v2 라이브를 옆으로 치운다
+-- 2) legacy 를 원래 이름으로
+-- 3) item_results 가 legacy 로 바뀌었으면 복구
+--
+-- 뷰는 라이브 테이블을 가리키므로, 롤백 후 뷰를 DROP 하거나 재생성하지 않아도
+-- 레거시 스키마와 컬럼이 안 맞아 깨질 수 있다. 롤백 후 뷰 DROP 을 같이 실행.
+
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_evaluation_results`
+--   RENAME TO qradar_evaluation_results_v2_failed_{{stamp}};
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_evaluation_results_legacy_{{stamp}}`
+--   RENAME TO qradar_evaluation_results;
+--
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_eval_human_reviews`
+--   RENAME TO qradar_eval_human_reviews_v2_failed_{{stamp}};
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_eval_human_reviews_legacy_{{stamp}}`
+--   RENAME TO qradar_eval_human_reviews;
+--
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_eval_review_completions`
+--   RENAME TO qradar_eval_review_completions_v2_failed_{{stamp}};
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_eval_review_completions_legacy_{{stamp}}`
+--   RENAME TO qradar_eval_review_completions;
+--
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_eval_review_claims`
+--   RENAME TO qradar_eval_review_claims_v2_failed_{{stamp}};
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_eval_review_claims_legacy_{{stamp}}`
+--   RENAME TO qradar_eval_review_claims;
+--
+-- ALTER TABLE `{{project}}.{{dataset}}.qradar_evaluation_item_results_legacy_{{stamp}}`
+--   RENAME TO qradar_evaluation_item_results;
+--
+-- DROP VIEW IF EXISTS `{{project}}.{{dataset}}.vw_qradar_eval_latest_run`;
+-- DROP VIEW IF EXISTS `{{project}}.{{dataset}}.vw_qradar_eval_latest_annotations`;
+-- DROP VIEW IF EXISTS `{{project}}.{{dataset}}.vw_qradar_eval_item_status`;
+
+SELECT "Use scripts/migrate-eval-item-key.ts --rollback instead of running this file by hand" AS hint;

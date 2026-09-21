@@ -1,6 +1,9 @@
 import { getBQ } from "./bigquery";
 import { growthBq, qradarTable } from "./bqRefs";
 import { handleOf, sameEmail, type EvalReviewClaim } from "./evalReviewClaim";
+import { isEvalItemKeyV2, phoneIdEqSql, phoneIdInSql, phoneScopeParams } from "./evalItemKey";
+import { EVAL_REVIEW_CLAIMS_V2_SCHEMA } from "./evalSchemaV2";
+import { PHONE_SOURCE_SYSTEM } from "./evaluationChannel";
 import {
   applyClaimOverlayToActiveMap,
   hydrateClaim,
@@ -52,7 +55,11 @@ export function ensureEvalReviewClaimTable(): Promise<void> {
       const [exists] = await t.exists();
       if (!exists) {
         await t
-          .create({ schema: SCHEMA as unknown as { name: string; type: string; mode: string }[] })
+          .create({
+            schema: EVAL_REVIEW_CLAIMS_V2_SCHEMA,
+            timePartitioning: { type: "DAY", field: "claimed_at" },
+            clustering: { fields: ["channel", "source_id"] },
+          })
           .catch((e) => {
             if (!isAlreadyExists(e)) throw e;
           });
@@ -73,7 +80,7 @@ function tsValue(v: unknown): string {
 }
 
 function rowToClaim(r: Record<string, unknown>): EvalReviewClaim | null {
-  const conversationId = String(r.conversation_id ?? "").trim();
+  const conversationId = String(r.conversation_id ?? r.source_id ?? "").trim();
   const claimedBy = String(r.claimed_by ?? "").trim();
   if (!conversationId || !claimedBy) return null;
   return {
@@ -92,12 +99,21 @@ async function insertClaimRow(input: {
   const claimedAt = new Date().toISOString();
   await claimTable().insert(
     [
-      {
-        conversation_id: input.conversationId,
-        claimed_by: input.claimedBy,
-        claimed_at: claimedAt,
-        active: input.active,
-      },
+      (await isEvalItemKeyV2())
+        ? {
+            channel: "phone",
+            source_system: PHONE_SOURCE_SYSTEM,
+            source_id: input.conversationId,
+            claimed_by: input.claimedBy,
+            claimed_at: claimedAt,
+            active: input.active,
+          }
+        : {
+            conversation_id: input.conversationId,
+            claimed_by: input.claimedBy,
+            claimed_at: claimedAt,
+            active: input.active,
+          },
     ],
     { skipInvalidRows: true, ignoreUnknownValues: true },
   );
@@ -118,16 +134,17 @@ async function latestClaimRow(conversationId: string): Promise<LatestClaimRow | 
   await ensureEvalReviewClaimTable();
   const sql = growthBq.resultsSql(TABLE);
   let bq: LatestClaimRow | null = null;
+  const v2 = await isEvalItemKeyV2();
   try {
     const [rows] = await getBQ().query({
       query: `
-        select conversation_id, claimed_by, claimed_at, active
+        select *
         from ${sql}
-        where conversation_id = @conversation_id
+        where ${phoneIdEqSql(v2, "conversation_id")}
         order by claimed_at desc
         limit 1
       `,
-      params: { conversation_id: id },
+      params: { conversation_id: id, ...phoneScopeParams(v2) },
       ...loc(),
     });
     const raw = (rows as Record<string, unknown>[])[0];
@@ -156,15 +173,16 @@ export async function listActiveClaimsByConversationIds(
   if (!ids.length) return out;
   await ensureEvalReviewClaimTable();
   const sql = growthBq.resultsSql(TABLE);
+  const v2 = await isEvalItemKeyV2();
   try {
     const [rows] = await getBQ().query({
       query: `
-        select conversation_id, claimed_by, claimed_at, active
+        select *
         from ${sql}
-        where conversation_id in unnest(@ids)
-        qualify row_number() over (partition by conversation_id order by claimed_at desc) = 1
+        where ${phoneIdInSql(v2, "ids")}
+        qualify row_number() over (partition by ${v2 ? "channel, source_system, source_id" : "conversation_id"} order by claimed_at desc) = 1
       `,
-      params: { ids },
+      params: { ids, ...phoneScopeParams(v2) },
       ...loc(),
     });
     for (const raw of rows as Record<string, unknown>[]) {
@@ -186,16 +204,18 @@ export async function listActiveClaimConversationIdsBy(email: string, limit = 50
   const lim = Math.min(Math.max(1, Math.floor(limit)), 1000);
   await ensureEvalReviewClaimTable();
   const sql = growthBq.resultsSql(TABLE);
+  const v2 = await isEvalItemKeyV2();
+  const idCol = v2 ? "source_id" : "conversation_id";
   try {
     const [rows] = await getBQ().query({
       query: `
-        select conversation_id, claimed_by, claimed_at, active
+        select ${idCol} as conversation_id, claimed_by, claimed_at, active
         from (
-          select conversation_id, claimed_by, claimed_at, active,
-            row_number() over (partition by conversation_id order by claimed_at desc) as rn
+          select ${idCol}, claimed_by, claimed_at, active,
+            row_number() over (partition by ${v2 ? "channel, source_system, source_id" : "conversation_id"} order by claimed_at desc) as rn
           from ${sql}
-          where conversation_id in (
-            select distinct conversation_id from ${sql} where claimed_by = @email
+          where ${idCol} in (
+            select distinct ${idCol} from ${sql} where claimed_by = @email
           )
         )
         where rn = 1

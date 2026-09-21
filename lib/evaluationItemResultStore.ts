@@ -6,7 +6,8 @@ import type { EvaluationResult } from "./types";
 import { checklistFromEvalPayload } from "./humanResultDerive";
 import { deriveEvalLabel } from "./resultParse";
 import { DEFAULT_RESULT_PARSE_CONFIG, type ResultParseConfig } from "./promptTypes";
-import { flattenOverallSummary } from "./outputSchema";
+import { isEvalItemKeyV2, mapStoredPurpose } from "./evalItemKey";
+import { saveEvalRun } from "./evalResultStore";
 
 /** 전화 레거시 결과 테이블과 분리된 채널 공통 결과 행. */
 export type EvaluationItemResultRow = {
@@ -100,6 +101,7 @@ export function rowToEvaluationItemResult(row: Record<string, unknown>): Evaluat
   const sourceSystem = String(row.source_system ?? "").trim();
   const sourceId = String(row.source_id ?? "").trim();
   if (!channel || !sourceSystem || !sourceId) return null;
+  const turns = String(row.conversation_json ?? row.turns_json ?? "[]");
   return {
     analysisId: String(row.analysis_id ?? ""),
     analyzedAt: tsValue(row.analyzed_at),
@@ -115,8 +117,8 @@ export function rowToEvaluationItemResult(row: Record<string, unknown>): Evaluat
     aiLabel: String(row.ai_label ?? ""),
     checklistJson: String(row.checklist_json ?? "[]"),
     resultJson: String(row.result_json ?? "{}"),
-    transcriptJson: String(row.transcript_json ?? "[]"),
-    conversationJson: String(row.conversation_json ?? "[]"),
+    transcriptJson: String(row.transcript_json ?? turns),
+    conversationJson: turns,
     inputSnapshotJson: String(row.input_snapshot_json ?? "{}"),
     llmCallId: row.llm_call_id == null ? null : String(row.llm_call_id),
     error: row.error == null ? null : String(row.error),
@@ -139,6 +141,44 @@ export interface SaveEvaluationItemResultInput extends EvaluationItemRef {
 export async function saveEvaluationItemResult(
   input: SaveEvaluationItemResultInput,
 ): Promise<EvaluationItemResultRow> {
+  if (await isEvalItemKeyV2()) {
+    const conversation = input.result.evaluation.conversation ?? [];
+    const saved = await saveEvalRun({
+      purpose: mapStoredPurpose(input.purpose),
+      org: input.org,
+      ref: { channel: input.channel, sourceSystem: input.sourceSystem, sourceId: input.sourceId },
+      analyzedBy: input.analyzedBy,
+      result: input.result,
+      promptVersionId: input.promptVersionId,
+      promptVersion: input.promptVersion,
+      model: input.model,
+      llmCallId: input.llmCallId,
+      parseConfig: input.parseConfig,
+      turnsJson: JSON.stringify(conversation.length ? conversation : (input.result.evaluation.transcript ?? [])),
+      inputSnapshot: input.inputSnapshot ?? { turns: conversation },
+    });
+    return {
+      analysisId: saved.analysisId,
+      analyzedAt: saved.analyzedAt,
+      channel: input.channel,
+      sourceSystem: input.sourceSystem,
+      sourceId: input.sourceId,
+      org: saved.org,
+      purpose: saved.purpose ?? mapStoredPurpose(input.purpose),
+      analyzedBy: saved.analyzedBy,
+      model: saved.model,
+      promptVersionId: saved.promptVersionId,
+      promptVersion: saved.promptVersion,
+      aiLabel: saved.aiLabel,
+      checklistJson: saved.checklistJson,
+      resultJson: saved.resultJson,
+      transcriptJson: saved.transcriptJson,
+      conversationJson: saved.transcriptJson,
+      inputSnapshotJson: JSON.stringify(input.inputSnapshot ?? { turns: conversation }),
+      llmCallId: saved.llmCallId,
+      error: saved.error,
+    };
+  }
   await ensureEvaluationItemResultsTable();
   const analysisId = randomUUID();
   const analyzedAt = new Date().toISOString();
@@ -149,7 +189,7 @@ export async function saveEvaluationItemResult(
     sourceId: input.sourceId,
   };
   const checklist = checklistFromEvalPayload({ resultJson: JSON.stringify(result), checklistJson: "[]" });
-  const aiLabel = deriveEvalLabel(
+  const aiLabel = result.evaluation.error ? "" : deriveEvalLabel(
     { csChecklist: checklist },
     input.parseConfig ?? DEFAULT_RESULT_PARSE_CONFIG,
   );
@@ -238,6 +278,24 @@ export async function saveEvaluationItemResult(
 export async function getLatestEvaluationItemResult(
   ref: EvaluationItemRef,
 ): Promise<EvaluationItemResultRow | null> {
+  if (await isEvalItemKeyV2()) {
+    const [rows] = await getBQ().query({
+      query: `
+        select *
+        from ${growthBq.resultsSql(growthBq.resultsTable)}
+        where channel = @channel and source_system = @source_system and source_id = @source_id
+        order by analyzed_at desc
+        limit 1
+      `,
+      params: {
+        channel: ref.channel,
+        source_system: ref.sourceSystem,
+        source_id: ref.sourceId,
+      },
+      ...loc(),
+    });
+    return rowToEvaluationItemResult((rows as Record<string, unknown>[])[0] ?? {});
+  }
   await ensureEvaluationItemResultsTable();
   const [rows] = await getBQ().query({
     query: `
@@ -247,7 +305,11 @@ export async function getLatestEvaluationItemResult(
       order by analyzed_at desc
       limit 1
     `,
-    params: ref,
+    params: {
+      channel: ref.channel,
+      source_system: ref.sourceSystem,
+      source_id: ref.sourceId,
+    },
     ...loc(),
   });
   return rowToEvaluationItemResult((rows as Record<string, unknown>[])[0] ?? {});
@@ -259,6 +321,26 @@ export async function listLatestEvaluationItemResults(
   const unique = [...new Map(refs.map((ref) => [`${ref.channel}:${ref.sourceSystem}:${ref.sourceId}`, ref])).values()];
   const out = new Map<string, EvaluationItemResultRow>();
   if (!unique.length) return out;
+  if (await isEvalItemKeyV2()) {
+    const keys = unique.map((ref) => `${ref.channel}:${ref.sourceSystem}:${ref.sourceId}`);
+    const [rows] = await getBQ().query({
+      query: `
+        select *
+        from ${growthBq.resultsSql(growthBq.resultsTable)}
+        where concat(channel, ':', source_system, ':', source_id) in unnest(@keys)
+        qualify row_number() over (
+          partition by channel, source_system, source_id order by analyzed_at desc
+        ) = 1
+      `,
+      params: { keys },
+      ...loc(),
+    });
+    for (const raw of rows as Record<string, unknown>[]) {
+      const row = rowToEvaluationItemResult(raw);
+      if (row) out.set(`${row.channel}:${row.sourceSystem}:${row.sourceId}`, row);
+    }
+    return out;
+  }
   await ensureEvaluationItemResultsTable();
   const keys = unique.map((ref) => `${ref.channel}:${ref.sourceSystem}:${ref.sourceId}`);
   const [rows] = await getBQ().query({
@@ -284,12 +366,38 @@ export async function parseStoredEvaluationItemResult(
   row: EvaluationItemResultRow,
 ): Promise<EvaluationResult | null> {
   try {
-    const result = JSON.parse(row.resultJson) as EvaluationResult;
-    result.analysisId = row.analysisId;
-    result.channel = row.channel;
-    result.sourceSystem = row.sourceSystem;
-    result.sourceId = row.sourceId;
-    return result;
+    const parsed = JSON.parse(row.resultJson) as Partial<EvaluationResult> | null;
+    if (!parsed || typeof parsed !== "object") return null;
+    const checklist = checklistFromEvalPayload({
+      checklistJson: row.checklistJson,
+      resultJson: row.resultJson,
+    });
+    const evaluation = parsed.evaluation ?? {
+      scores: {},
+      overallSummary: "",
+      silenceComments: [],
+      transcript: [],
+      csChecklist: checklist,
+      error: row.error,
+    };
+    if (!evaluation.csChecklist?.length && checklist.length) {
+      evaluation.csChecklist = checklist;
+    }
+    return {
+      durationSec: parsed.durationSec ?? 0,
+      threshold: parsed.threshold ?? { minSilenceSec: 0, noiseDb: 0 },
+      silences: parsed.silences ?? [],
+      silenceSummary: parsed.silenceSummary ?? { count: 0, totalSec: 0, longestSec: 0, silenceRatio: 0 },
+      overlaps: parsed.overlaps ?? [],
+      evaluation,
+      conversationId: parsed.conversationId,
+      analysisId: row.analysisId,
+      promptConfig: parsed.promptConfig,
+      channel: row.channel,
+      sourceSystem: row.sourceSystem,
+      sourceId: row.sourceId,
+      sttSource: parsed.sttSource,
+    };
   } catch {
     return null;
   }
