@@ -173,6 +173,7 @@ export default function Sidebar() {
             label: "품질평가",
             items: [
               { label: "리포트", href: "/results/report", icon: LineChart },
+              { label: "월간 리포트", href: "/results/monthly-report", icon: CalendarClock },
               { label: "평가 현황", href: "/results/status", icon: ListChecks },
               { label: "케이스 상세", href: "/results/cases", icon: FileSearch },
               { label: "월별 집계", href: "/results/aggregate", icon: PieChart },

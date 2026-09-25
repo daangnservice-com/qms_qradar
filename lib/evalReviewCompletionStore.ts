@@ -1,5 +1,8 @@
 import { getBQ } from "./bigquery";
 import { growthBq, qradarTable } from "./bqRefs";
+import { isEvalItemKeyV2, phoneIdEqSql, phoneIdInSql, phoneScopeParams } from "./evalItemKey";
+import { EVAL_REVIEW_COMPLETIONS_V2_SCHEMA } from "./evalSchemaV2";
+import { PHONE_SOURCE_SYSTEM } from "./evaluationChannel";
 
 export type EvalReviewCompletion = {
   conversationId: string;
@@ -43,7 +46,11 @@ export function ensureEvalReviewCompletionTable(): Promise<void> {
       const [exists] = await t.exists();
       if (!exists) {
         await t
-          .create({ schema: SCHEMA as unknown as { name: string; type: string; mode: string }[] })
+          .create({
+            schema: EVAL_REVIEW_COMPLETIONS_V2_SCHEMA,
+            timePartitioning: { type: "DAY", field: "completed_at" },
+            clustering: { fields: ["channel", "source_id"] },
+          })
           .catch((e) => {
             if (!isAlreadyExists(e)) throw e;
           });
@@ -64,7 +71,7 @@ function tsValue(v: unknown): string {
 }
 
 function rowToCompletion(r: Record<string, unknown>): EvalReviewCompletion | null {
-  const conversationId = String(r.conversation_id ?? "").trim();
+  const conversationId = String(r.conversation_id ?? r.source_id ?? "").trim();
   const completedBy = String(r.completed_by ?? "").trim();
   if (!conversationId || !completedBy) return null;
   return {
@@ -98,13 +105,23 @@ export async function saveReviewCompletion(input: {
   };
   await completionTable().insert(
     [
-      {
-        conversation_id: row.conversationId,
-        completed_at: row.completedAt,
-        completed_by: row.completedBy,
-        analysis_id: row.analysisId,
-        org: row.org,
-      },
+      (await isEvalItemKeyV2())
+        ? {
+            channel: "phone",
+            source_system: PHONE_SOURCE_SYSTEM,
+            source_id: row.conversationId,
+            completed_at: row.completedAt,
+            completed_by: row.completedBy,
+            analysis_id: row.analysisId,
+            org: row.org,
+          }
+        : {
+            conversation_id: row.conversationId,
+            completed_at: row.completedAt,
+            completed_by: row.completedBy,
+            analysis_id: row.analysisId,
+            org: row.org,
+          },
     ],
     { skipInvalidRows: true, ignoreUnknownValues: true },
   );
@@ -118,16 +135,17 @@ export async function getLatestReviewCompletion(
   if (!id) return null;
   await ensureEvalReviewCompletionTable();
   const sql = growthBq.resultsSql(TABLE);
+  const v2 = await isEvalItemKeyV2();
   try {
     const [rows] = await getBQ().query({
       query: `
-        select conversation_id, completed_at, completed_by, analysis_id, org
+        select *
         from ${sql}
-        where conversation_id = @conversation_id
+        where ${phoneIdEqSql(v2, "conversation_id")}
         order by completed_at desc
         limit 1
       `,
-      params: { conversation_id: id },
+      params: { conversation_id: id, ...phoneScopeParams(v2) },
       ...loc(),
     });
     const raw = (rows as Record<string, unknown>[])[0];
@@ -147,15 +165,16 @@ export async function listLatestReviewCompletionsByConversationIds(
   if (!ids.length) return out;
   await ensureEvalReviewCompletionTable();
   const sql = growthBq.resultsSql(TABLE);
+  const v2 = await isEvalItemKeyV2();
   try {
     const [rows] = await getBQ().query({
       query: `
-        select conversation_id, completed_at, completed_by, analysis_id, org
+        select *
         from ${sql}
-        where conversation_id in unnest(@ids)
-        qualify row_number() over (partition by conversation_id order by completed_at desc) = 1
+        where ${phoneIdInSql(v2, "ids")}
+        qualify row_number() over (partition by ${v2 ? "channel, source_system, source_id" : "conversation_id"} order by completed_at desc) = 1
       `,
-      params: { ids },
+      params: { ids, ...phoneScopeParams(v2) },
       ...loc(),
     });
     for (const raw of rows as Record<string, unknown>[]) {
@@ -179,17 +198,19 @@ export async function listReviewCompletionsInPeriod(opts: {
   const lim = Math.min(Math.max(Math.floor(opts.limit ?? 2000) || 2000, 1), 5000);
   const sql = growthBq.resultsSql(TABLE);
   const org = opts.org?.trim() || null;
+  const v2 = await isEvalItemKeyV2();
+  const partition = v2 ? "channel, source_system, source_id" : "conversation_id";
   try {
     const [rows] = await getBQ().query({
       query: `
-        select conversation_id, completed_at, completed_by, analysis_id, org
+        select *
         from (
           select *
           from ${sql}
           where completed_at >= timestamp(@start_iso)
             and completed_at < timestamp(@end_iso)
             ${org ? "and org = @org" : ""}
-          qualify row_number() over (partition by conversation_id order by completed_at desc) = 1
+          qualify row_number() over (partition by ${partition} order by completed_at desc) = 1
         )
         order by completed_at desc
         limit @limit
@@ -220,16 +241,18 @@ export async function listRecentCompletedConversationIds(opts?: {
   const lim = Math.min(Math.max(Math.floor(opts?.limit ?? 100) || 100, 1), 500);
   const sql = growthBq.resultsSql(TABLE);
   const org = opts?.org?.trim() || null;
+  const v2 = await isEvalItemKeyV2();
+  const idCol = v2 ? "source_id" : "conversation_id";
   try {
     const [rows] = await getBQ().query({
       query: `
-        select conversation_id
+        select ${idCol} as conversation_id
         from (
-          select conversation_id, completed_at
+          select ${idCol}, completed_at
           from ${sql}
-          where conversation_id is not null and conversation_id != ''
+          where ${idCol} is not null and ${idCol} != ''
             ${org ? "and org = @org" : ""}
-          qualify row_number() over (partition by conversation_id order by completed_at desc) = 1
+          qualify row_number() over (partition by ${v2 ? "channel, source_system, source_id" : "conversation_id"} order by completed_at desc) = 1
         )
         order by completed_at desc
         limit @limit
