@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Loader2, Plus, Save } from "lucide-react";
+import { CHANNEL_LABELS, readExposureChannels } from '@/lib/criterionChannels';
+import { EVALUATION_CHANNELS, type EvaluationChannel } from '@/lib/evaluationChannel';
 import type {
   CriterionPrompt,
   CriterionReviewScope,
@@ -44,6 +46,8 @@ export default function EvalAiItemsWorkbench() {
   }, [source]);
 
   const [cat, setCat] = useState<string | null>(null);
+  const [channelFilter, setChannelFilter] = useState<EvaluationChannel | ''>('');
+  const [exposureChannels, setExposureChannels] = useState<EvaluationChannel[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [selectedPromptId, setSelectedPromptId] = useState<string | null>(null);
   /** true면 히스토리 선택 없이 빈/복사 초안 편집 (저장 전까지) */
@@ -57,20 +61,20 @@ export default function EvalAiItemsWorkbench() {
   const [err, setErr] = useState<string | null>(null);
 
   const activeCat = cat ?? categories[0] ?? null;
-  const list = source.filter((s) => (activeCat ? (s.parentName || "기타") === activeCat : true));
+  const list = source.filter((s) => (activeCat ? (s.parentName || "기타") === activeCat : true) && (!channelFilter || prompts.some((p) => p.criterionId === s.id && readExposureChannels(p.exposureChannels).includes(channelFilter))));
 
   const versions = useMemo(
     () =>
       selectedId == null
         ? []
         : prompts
-            .filter((p) => p.criterionId === selectedId)
+            .filter((p) => p.criterionId === selectedId && (!channelFilter || readExposureChannels(p.exposureChannels).includes(channelFilter)))
             .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)),
-    [prompts, selectedId],
+    [prompts, selectedId, channelFilter],
   );
 
   const selectedSource =
-    source.find((s) => s.id === (selectedId ?? list[0]?.id)) ?? list[0] ?? source[0] ?? null;
+    list.find((s) => s.id === selectedId) ?? list[0] ?? null;
 
   const previewLabel = useMemo(
     () => buildCriterionVersionLabel(versionNote, versions.map((v) => v.versionLabel)),
@@ -89,7 +93,7 @@ export default function EvalAiItemsWorkbench() {
       setSelectedPromptId(null);
       setDraftingNew(false);
     }
-  }, [activeCat]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeCat, channelFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (selectedId == null || draftingNew) return;
@@ -99,13 +103,15 @@ export default function EvalAiItemsWorkbench() {
       setSelectedPromptId(pick.promptId);
       setVersionNote("");
       setReviewScope(pick.reviewScope ?? DEFAULT_CRITERION_REVIEW_SCOPE);
-      const next: Record<string, string> = {};
+      setExposureChannels(readExposureChannels(pick.exposureChannels));
+      const next: Record<string, string> = { ...pick.fields };
       for (const f of fieldKeys.filter((k) => k.enabled)) next[f.key] = pick.fields?.[f.key] ?? "";
       setFieldDraft(next);
     } else {
       setSelectedPromptId(null);
       setVersionNote("");
       setReviewScope(DEFAULT_CRITERION_REVIEW_SCOPE);
+      setExposureChannels([]);
       const next: Record<string, string> = {};
       for (const f of fieldKeys.filter((k) => k.enabled)) next[f.key] = "";
       setFieldDraft(next);
@@ -116,9 +122,10 @@ export default function EvalAiItemsWorkbench() {
     setDraftingNew(true);
     setSelectedPromptId(null);
     setVersionNote("");
-    const base = versions[0];
+    const base = versions.find((p) => p.promptId === selectedPromptId);
+    setExposureChannels(base ? readExposureChannels(base.exposureChannels) : []);
     setReviewScope(base?.reviewScope ?? DEFAULT_CRITERION_REVIEW_SCOPE);
-    const next: Record<string, string> = {};
+    const next: Record<string, string> = { ...base?.fields };
     for (const f of fieldKeys.filter((k) => k.enabled)) {
       next[f.key] = base?.fields?.[f.key] ?? "";
     }
@@ -127,6 +134,7 @@ export default function EvalAiItemsWorkbench() {
 
   const save = async () => {
     if (!selectedSource) return;
+    if (!exposureChannels.length) { setErr('노출 채널을 최소 하나 선택하세요'); return; }
     setBusy(true);
     setErr(null);
     setMsg(null);
@@ -141,6 +149,7 @@ export default function EvalAiItemsWorkbench() {
           label: selectedSource.name,
           fields: fieldDraft,
           reviewScope,
+          exposureChannels,
           versionNote,
         }),
       });
@@ -182,6 +191,10 @@ export default function EvalAiItemsWorkbench() {
           </button>
         </div>
       </header>
+      <label>노출 채널 필터 <select aria-label="노출 채널 필터" className="qms-select" value={channelFilter} onChange={(e) => { setChannelFilter(e.target.value as EvaluationChannel | ''); setSelectedPromptId(null); setDraftingNew(false); }}>
+        <option value="">전체 채널</option>
+        {EVALUATION_CHANNELS.map((c) => <option key={c} value={c}>{CHANNEL_LABELS[c]}</option>)}
+      </select></label>
 
       {(error || err) && (
         <div className="rounded-[var(--radius-md)] bg-[var(--danger-subtle)] px-3 py-2 text-[13px] text-[var(--danger)]">
@@ -244,7 +257,7 @@ export default function EvalAiItemsWorkbench() {
               ) : list.length ? (
                 list.map((s) => {
                   const vers = prompts
-                    .filter((p) => p.criterionId === s.id)
+                    .filter((p) => p.criterionId === s.id && (!channelFilter || readExposureChannels(p.exposureChannels).includes(channelFilter)))
                     .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
                   const latest = vers[0];
                   const active = selectedSource?.id === s.id;
@@ -268,6 +281,7 @@ export default function EvalAiItemsWorkbench() {
                         {latest ? (
                           <div>
                             <div className="font-semibold">{latest.versionLabel}</div>
+                            {readExposureChannels(latest.exposureChannels).map((c) => <span className="qms-chip" key={c}>{CHANNEL_LABELS[c]}</span>)}
                             <div className="text-[11px] text-[var(--fg-tertiary)]">
                               {formatUpdatedAtKst(latest.updatedAt)}
                               {latest.updatedBy ? ` · ${latest.updatedBy}` : ""}
@@ -331,6 +345,7 @@ export default function EvalAiItemsWorkbench() {
                       >
                         <div className="flex items-center gap-1.5">
                           <span className="text-[12px] font-bold">{p.versionLabel}</span>
+                          {readExposureChannels(p.exposureChannels).map((c) => <span className="qms-chip" key={c}>{CHANNEL_LABELS[c]}</span>)}
                           {isLatest ? <span className="qms-chip-prod qms-chip">최신</span> : null}
                         </div>
                         <div className="mt-0.5 text-[11px] text-[var(--fg-tertiary)]">
@@ -346,6 +361,13 @@ export default function EvalAiItemsWorkbench() {
                 </div>
               </div>
 
+              <fieldset className="space-y-2">
+                <legend>노출 채널 (최소 하나)</legend>
+                {EVALUATION_CHANNELS.map((c) => <label key={c} className="mr-3 inline-flex gap-1">
+                  <input type="checkbox" checked={exposureChannels.includes(c)} onChange={(e) => setExposureChannels((prev) => e.target.checked ? [...prev, c] : prev.filter((v) => v !== c))} />{CHANNEL_LABELS[c]}
+                </label>)}
+                <p className="text-xs">노출 채널과 상세 변경은 새 버전으로 저장됩니다. 기존 평가셋의 바인딩과 활성화 설정은 유지됩니다.</p>
+              </fieldset>
               <label className="block text-[12px] font-semibold">
                 추가 문구 (선택)
                 <input

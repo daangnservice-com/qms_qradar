@@ -12,45 +12,62 @@ export function isAdmin(email: string | null | undefined): boolean {
   return !!email && ADMIN_EMAILS.includes(email.toLowerCase());
 }
 
-// 콜 분석 접근 허용 — 개인 화이트리스트 + Google Groups(Directory API).
-// 그룹 멤버십은 lib/googleGroups.ts → 로그인 JWT(session.access.callQuality)에 반영.
-export const CALL_QUALITY_GROUP_EMAILS = [
-  "ds-sr-cx-professional-l4@daangnservice.com",
-  "ds-staff-cx-professional-l5@daangnservice.com",
-  "csat--tf@daangnservice.com",
+function emailIn(list: readonly string[], email: string | null | undefined): boolean {
+  return !!email && list.includes(email.toLowerCase());
+}
+
+// ──────────────────────────────────────────────────────────────
+// 품질평가 권한 레이어 (사이드바 기준, 민감도 낮은 순)
+//
+//  평가 진행(콜·문의·채팅) ……… 당근서비스 도메인 전체 (+관리자)
+//  품질평가 > 월간 리포트 ……… MONTHLY_REPORT_* (리더) + quality eval
+//  평가 설계 · 품질평가 나머지 … QUALITY_EVAL_*
+//  평가 운영 ………………………… DISTRIBUTION_* (기존)
+//  시스템 ……………………………… ADMIN_EMAILS
+//
+// Google Groups 멤버십은 lib/googleGroups.ts → 로그인 JWT에 반영.
+// ──────────────────────────────────────────────────────────────
+
+/** 로그인 허용 도메인. lib/auth.ts signIn과 같은 기준. */
+export function isDomainMember(email: string | null | undefined): boolean {
+  const domain = (process.env.ALLOWED_EMAIL_DOMAIN ?? "daangnservice.com").toLowerCase();
+  return !!email && email.toLowerCase().endsWith(`@${domain}`);
+}
+
+/** 평가 설계·품질평가(리포트). */
+export const QUALITY_EVAL_GROUP_EMAILS: string[] = [
+  // 예: "qradar-quality-eval@daangnservice.com",
   "growth_@daangnservice.com",
 ];
 
-/** 성장문화실 콜 분석 — 개인 계정 화이트리스트 (그룹은 API로 검사). */
-export const CALL_QUALITY_EMAILS = [
-  "karla@daangnservice.com",
-  "laika@daangnservice.com", // 성장문화실 전용
-  "amir@daangnservice.com", // 성장문화실 전용
-  "riley.lee@daangnservice.com", // 성장문화실 전용
-  "haro@daangnservice.com",
-  "ocean.go@daangnservice.com",
-  "ellie.park@daangnservice.com",
-  "amber.jeon@daangnservice.com", // karla와 동일 권한(성장문화실+페이팀)
-  "sage@daangnservice.com",
+/** 평가 설계·품질평가 개인 화이트리스트. */
+export const QUALITY_EVAL_EMAILS: string[] = [
+  // 평가 설계·리포트를 봐야 하는 계정을 여기 추가.
+  ...ADMIN_EMAILS,
 ];
 
-// 페이팀 콜 분석(품질평가).
-export const PAY_CALL_QUALITY_EMAILS = [
-  "karla@daangnservice.com",
-  "taeo@daangnservice.com",
-  "heather@daangnservice.com",
-  "amir@daangnservice.com", // 성장문화실 전용
-  "amber.jeon@daangnservice.com", // karla와 동일 권한
+/** 품질평가 > 월간 리포트만 — 리더(L5). quality eval 권한이면 포함. */
+export const MONTHLY_REPORT_GROUP_EMAILS: string[] = [
+  "ds-staff-cx-professional-l5@daangnservice.com",
 ];
 
-/** 동기: 개인 화이트리스트만. 그룹 멤버는 session.access 또는 resolveCanAccessCallQuality 사용. */
-export function canAccessCallQuality(email: string | null | undefined): boolean {
-  return !!email && CALL_QUALITY_EMAILS.includes(email.toLowerCase());
+/** 월간 리포트 — 개인 화이트리스트. */
+export const MONTHLY_REPORT_EMAILS: string[] = [];
+
+/** 동기: 개인 화이트리스트만. 그룹 멤버는 session.access 또는 resolve* 사용. */
+export function canAccessQualityEval(email: string | null | undefined): boolean {
+  return emailIn(QUALITY_EVAL_EMAILS, email);
 }
-export function canAccessPayCallQuality(email: string | null | undefined): boolean {
-  return !!email && PAY_CALL_QUALITY_EMAILS.includes(email.toLowerCase());
+
+export function canAccessMonthlyReport(email: string | null | undefined): boolean {
+  return canAccessQualityEval(email) || emailIn(MONTHLY_REPORT_EMAILS, email);
 }
-// 어느 조직이든 콜 분석에 접근 가능한지(사이드바 노출 판단 등).
+
+/** 평가 진행(콜·인앱문의·채팅상담) — 도메인 구성원 전체 + 관리자. */
+export function canAccessEvalProgress(email: string | null | undefined): boolean {
+  return isAdmin(email) || isDomainMember(email);
+}
+
 /** 품질평가 배분 시뮬레이터 — 성장문화팀(전체 탭). GAS FULL_ACCESS + 관리자. */
 export const DISTRIBUTION_FULL_EMAILS = [
   ...ADMIN_EMAILS,
@@ -71,10 +88,6 @@ export const DISTRIBUTION_ROSTER_EMAILS = [
 ];
 
 export type EvalOpsAccessLevel = "full" | "roster" | "none";
-
-function emailIn(list: string[], email: string | null | undefined): boolean {
-  return !!email && list.includes(email.toLowerCase());
-}
 
 export function canAccessEvalOpsFull(email: string | null | undefined): boolean {
   return emailIn(DISTRIBUTION_FULL_EMAILS, email);

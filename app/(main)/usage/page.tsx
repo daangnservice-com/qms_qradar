@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useSession } from "next-auth/react";
 import { Activity, BarChart3, Clock, Users, Zap, ChevronDown, ChevronRight } from "lucide-react";
 import { isAdmin } from "@/lib/adminEmails";
-import type { UsageStats } from "@/lib/bigquery";
+import type { UsageStats } from "@/lib/usageEvents";
 
 // 경로 → 화면 이름(표시용). 새 페이지가 생기면 여기에 추가.
 const PATH_LABELS: Record<string, string> = {
@@ -13,12 +13,11 @@ const PATH_LABELS: Record<string, string> = {
   "/call-quality/high-risk": "고위험군 평가",
   "/call-quality/needs-review": "수기 평가 필요",
   "/call-quality/mine": "내 평가",
-  "/eval-ops/schedule": "평가 스케줄",
-  "/eval-ops/assign": "평가 배분",
-  "/eval-ops/auto-run": "자동 평가 실행",
   "/eval-ops/stt-batch": "STT 배치 스케줄",
+  "/eval-ops/stt-batch/issues": "STT 이슈",
   "/eval-ops/review-status": "검수 현황",
   "/eval-design/accuracy": "정확도 대시보드",
+  "/eval-design/reply-polish": "답변 다듬기 테스트",
   "/usage": "사용량",
   "/admin/eval-schedule": "AI 평가 job",
   "/guide": "이용 설명서",

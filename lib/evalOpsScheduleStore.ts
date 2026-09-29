@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { getBQ } from "./bigquery";
-import { addColumnsIfMissing } from "./bqSchema";
 import { distBq } from "./bqRefs";
+import { distRows, insertDistRows } from "./distDb";
 import { cellStr, parseGps, parseJson, pick } from "./evalOpsStore";
 import type { DistAssignUnit, DistGp } from "./distTypes";
 import { calendarMonthOf, parseDistSetId } from "./distSet";
@@ -66,87 +65,9 @@ export type EvalOpsScheduleItem = {
   isPhone: boolean;
 };
 
-const loc = () => (distBq.location ? { location: distBq.location } : {});
-const itemsSql = () => distBq.sql(distBq.tables.scheduleItems);
-const personalSql = () => distBq.sql(distBq.tables.schedulePersonal);
-const itemsTable = () =>
-  getBQ().dataset(distBq.dataset, { projectId: distBq.projectId }).table(distBq.tables.scheduleItems);
-const personalTable = () =>
-  getBQ().dataset(distBq.dataset, { projectId: distBq.projectId }).table(distBq.tables.schedulePersonal);
-
-const ITEMS_SCHEMA = [
-  { name: "id", type: "STRING", mode: "REQUIRED" },
-  { name: "eval_month", type: "STRING", mode: "REQUIRED" },
-  { name: "team_name", type: "STRING", mode: "REQUIRED" },
-  { name: "eval_type", type: "STRING", mode: "REQUIRED" },
-  { name: "channel", type: "STRING", mode: "REQUIRED" },
-  { name: "member_count", type: "INTEGER", mode: "REQUIRED" },
-  { name: "per_person_count", type: "INTEGER", mode: "REQUIRED" },
-  { name: "total_count", type: "INTEGER", mode: "REQUIRED" },
-  { name: "round_label", type: "STRING", mode: "REQUIRED" },
-  { name: "start_date", type: "DATE", mode: "NULLABLE" },
-  { name: "end_date", type: "DATE", mode: "NULLABLE" },
-  { name: "eval_done", type: "BOOLEAN", mode: "NULLABLE" },
-  { name: "leader_done", type: "BOOLEAN", mode: "NULLABLE" },
-  { name: "self_done", type: "BOOLEAN", mode: "NULLABLE" },
-  { name: "created_at", type: "TIMESTAMP", mode: "NULLABLE" },
-  { name: "updated_at", type: "TIMESTAMP", mode: "NULLABLE" },
-  { name: "evaluator_email", type: "STRING", mode: "NULLABLE" },
-  { name: "members_json", type: "STRING", mode: "NULLABLE" },
-  { name: "source_history_id", type: "STRING", mode: "NULLABLE" },
-] as const;
-
-const PERSONAL_SCHEMA = [
-  { name: "id", type: "STRING", mode: "REQUIRED" },
-  { name: "eval_month", type: "STRING", mode: "REQUIRED" },
-  { name: "owner_email", type: "STRING", mode: "REQUIRED" },
-  { name: "title", type: "STRING", mode: "REQUIRED" },
-  { name: "start_date", type: "DATE", mode: "REQUIRED" },
-  { name: "end_date", type: "DATE", mode: "NULLABLE" },
-  { name: "color", type: "STRING", mode: "NULLABLE" },
-  { name: "created_at", type: "TIMESTAMP", mode: "NULLABLE" },
-  { name: "updated_at", type: "TIMESTAMP", mode: "NULLABLE" },
-] as const;
-
-const isAlreadyExists = (e: unknown) =>
-  (e as { code?: number })?.code === 409 || /already exists/i.test(e instanceof Error ? e.message : String(e));
-
-let _ensured: Promise<void> | null = null;
-
-export function ensureScheduleTables(): Promise<void> {
-  if (!_ensured) {
-    _ensured = (async () => {
-      const bq = getBQ();
-      const ds = bq.dataset(distBq.dataset, { projectId: distBq.projectId });
-      const [dsExists] = await ds.exists();
-      if (!dsExists) {
-        await ds.create({ location: distBq.location ?? "asia-northeast3" }).catch((e) => {
-          if (!isAlreadyExists(e)) throw e;
-        });
-      }
-      for (const [tableFn, schema] of [
-        [itemsTable, ITEMS_SCHEMA],
-        [personalTable, PERSONAL_SCHEMA],
-      ] as const) {
-        const t = tableFn();
-        const [exists] = await t.exists();
-        if (!exists) {
-          await t
-            .create({ schema: schema as unknown as { name: string; type: string; mode: string }[] })
-            .catch((e) => {
-              if (!isAlreadyExists(e)) throw e;
-            });
-        } else {
-          await addColumnsIfMissing(t, [...schema], { location: distBq.location, logTag: "evalOpsScheduleStore" });
-        }
-      }
-    })().catch((e) => {
-      _ensured = null;
-      throw e;
-    });
-  }
-  return _ensured;
-}
+// 평가자 일정 보드. 원천은 서빙 Postgres(테이블 이름은 BQ 와 같다), BQ 는 야간 덤프 사본.
+const itemsSql = () => distBq.tables.scheduleItems;
+const personalSql = () => distBq.tables.schedulePersonal;
 
 function tsValue(v: unknown): string {
   if (v && typeof v === "object" && "value" in (v as object)) {
@@ -221,31 +142,27 @@ function rowToPersonal(r: Record<string, unknown>): EvalOpsPersonalEvent {
 
 async function latestHistoryRow(monthOrSetId: string): Promise<Record<string, unknown> | null> {
   const cal = calendarMonthOf(monthOrSetId);
-  const [rows] = await getBQ().query({
-    query: `
+  const rows = await distRows(
+    `
       SELECT *
-      FROM ${distBq.sql(distBq.tables.assignHistory)}
-      WHERE CAST(eval_month AS STRING) = @setId
-         OR CAST(eval_month AS STRING) = @calMonth
-         OR STARTS_WITH(CAST(eval_month AS STRING), @calPrefix)
+      FROM ${distBq.tables.assignHistory}
+      WHERE eval_month::text = @setId
+         OR eval_month::text = @calMonth
+         OR starts_with(eval_month::text, @calPrefix)
       ORDER BY
         CASE WHEN history_id IS NULL OR history_id = '' THEN 1 ELSE 0 END,
-        history_id DESC
+        history_id COLLATE "C" DESC NULLS LAST
       LIMIT 1`,
-    params: { setId: monthOrSetId, calMonth: cal, calPrefix: `${cal}_ver` },
-    ...loc(),
-  });
-  return ((rows as Record<string, unknown>[])[0] as Record<string, unknown>) ?? null;
+    { setId: monthOrSetId, calMonth: cal, calPrefix: `${cal}_ver` },
+  );
+  return rows[0] ?? null;
 }
 
 async function currentEvaluatorEmails(): Promise<Map<string, string>> {
   try {
-    const [rows] = await getBQ().query({
-      query: `SELECT * FROM ${distBq.sql(distBq.tables.evaluators)} LIMIT 80`,
-      ...loc(),
-    });
+    const rows = await distRows(`SELECT * FROM ${distBq.tables.evaluators} ORDER BY _row_id LIMIT 80`);
     const map = new Map<string, string>();
-    for (const g of parseGps(rows as Record<string, unknown>[])) {
+    for (const g of parseGps(rows)) {
       if (g.name && g.email) map.set(g.name, g.email.toLowerCase());
     }
     return map;
@@ -473,10 +390,8 @@ function boardItemToRow(item: EvalOpsScheduleBoardItem, now: string): Record<str
 
 async function insertBoardItems(items: EvalOpsScheduleBoardItem[]): Promise<void> {
   if (!items.length) return;
-  await ensureScheduleTables();
   const now = new Date().toISOString();
-  const rows = items.map((item) => boardItemToRow(item, now));
-  await itemsTable().insert(rows, { skipInvalidRows: true, ignoreUnknownValues: true });
+  await insertDistRows(itemsSql(), items.map((item) => boardItemToRow(item, now)));
 }
 
 async function insertBoardItem(item: EvalOpsScheduleBoardItem): Promise<void> {
@@ -487,36 +402,32 @@ export async function listScheduleItems(opts: {
   month: string;
   evaluatorEmail: string;
 }): Promise<EvalOpsScheduleBoardItem[]> {
-  await ensureScheduleTables();
   const email = opts.evaluatorEmail.trim().toLowerCase();
-  const [rows] = await getBQ().query({
-    query: `
+  const rows = await distRows(
+    `
       SELECT *
       FROM ${itemsSql()}
       WHERE eval_month = @month AND LOWER(evaluator_email) = @email
-      ORDER BY team_name, eval_type, channel, round_label, id`,
-    params: { month: opts.month, email },
-    ...loc(),
-  });
-  return (rows as Record<string, unknown>[]).map(rowToBoardItem);
+      ORDER BY team_name COLLATE "C", eval_type COLLATE "C", channel COLLATE "C", round_label COLLATE "C", id COLLATE "C"`,
+    { month: opts.month, email },
+  );
+  return rows.map(rowToBoardItem);
 }
 
 export async function listPersonalEvents(opts: {
   month: string;
   ownerEmail: string;
 }): Promise<EvalOpsPersonalEvent[]> {
-  await ensureScheduleTables();
   const email = opts.ownerEmail.trim().toLowerCase();
-  const [rows] = await getBQ().query({
-    query: `
+  const rows = await distRows(
+    `
       SELECT *
       FROM ${personalSql()}
       WHERE eval_month = @month AND LOWER(owner_email) = @email
-      ORDER BY start_date, id`,
-    params: { month: opts.month, email },
-    ...loc(),
-  });
-  return (rows as Record<string, unknown>[]).map(rowToPersonal);
+      ORDER BY start_date, id COLLATE "C"`,
+    { month: opts.month, email },
+  );
+  return rows.map(rowToPersonal);
 }
 
 export async function getScheduleBoard(opts: {
@@ -531,7 +442,6 @@ export async function getScheduleBoard(opts: {
   seeded: boolean;
   unmatchedReason?: string;
 }> {
-  await ensureScheduleTables();
   const parsed = parseDistSetId(opts.month);
   const month = parsed?.month ?? calendarMonthOf(opts.month);
   const email = opts.evaluatorEmail.trim().toLowerCase();
@@ -565,7 +475,6 @@ export async function bootstrapFromAssign(opts: {
   unmatchedReason?: string;
   error?: string;
 }> {
-  await ensureScheduleTables();
   const parsed = parseDistSetId(opts.month);
   const month = parsed?.month ?? calendarMonthOf(opts.month);
   const email = opts.evaluatorEmail.trim().toLowerCase();
@@ -599,10 +508,9 @@ export async function bootstrapFromAssign(opts: {
   }
 
   // Replace this evaluator+month rows
-  await getBQ().query({
-    query: `DELETE FROM ${itemsSql()} WHERE eval_month = @month AND LOWER(evaluator_email) = @email`,
-    params: { month, email },
-    ...loc(),
+  await distRows(`DELETE FROM ${itemsSql()} WHERE eval_month = @month AND LOWER(evaluator_email) = @email`, {
+    month,
+    email,
   });
 
   const boardItems = groupAssignUnitsToBoardItems({
@@ -636,14 +544,12 @@ export async function patchScheduleItem(opts: {
   evaluatorEmail: string;
   fields: ScheduleItemPatch;
 }): Promise<EvalOpsScheduleBoardItem | null> {
-  await ensureScheduleTables();
   const email = opts.evaluatorEmail.trim().toLowerCase();
-  const [rows] = await getBQ().query({
-    query: `SELECT * FROM ${itemsSql()} WHERE id = @id AND LOWER(evaluator_email) = @email LIMIT 1`,
-    params: { id: opts.id, email },
-    ...loc(),
+  const rows = await distRows(`SELECT * FROM ${itemsSql()} WHERE id = @id AND LOWER(evaluator_email) = @email LIMIT 1`, {
+    id: opts.id,
+    email,
   });
-  const row = (rows as Record<string, unknown>[])[0];
+  const row = rows[0];
   if (!row) return null;
 
   const cur = rowToBoardItem(row);
@@ -680,18 +586,18 @@ export async function patchScheduleItem(opts: {
   if (startDate && !endDate) endDate = startDate;
 
   const now = new Date().toISOString();
-  await getBQ().query({
-    query: `
+  await distRows(
+    `
       UPDATE ${itemsSql()}
       SET
-        start_date = ${startDate ? "DATE(@start_date)" : "NULL"},
-        end_date = ${endDate ? "DATE(@end_date)" : "NULL"},
+        start_date = ${startDate ? "@start_date::date" : "NULL"},
+        end_date = ${endDate ? "@end_date::date" : "NULL"},
         eval_done = @eval_done,
         leader_done = @leader_done,
         self_done = @self_done,
-        updated_at = TIMESTAMP(@updated_at)
+        updated_at = @updated_at::timestamptz
       WHERE id = @id AND LOWER(evaluator_email) = @email`,
-    params: {
+    {
       id: opts.id,
       email,
       ...(startDate ? { start_date: startDate } : {}),
@@ -701,8 +607,7 @@ export async function patchScheduleItem(opts: {
       self_done: selfDone,
       updated_at: now,
     },
-    ...loc(),
-  });
+  );
 
   return {
     ...cur,
@@ -719,14 +624,12 @@ export async function splitScheduleItem(opts: {
   id: string;
   evaluatorEmail: string;
 }): Promise<{ original: EvalOpsScheduleBoardItem; created: EvalOpsScheduleBoardItem } | { error: string }> {
-  await ensureScheduleTables();
   const email = opts.evaluatorEmail.trim().toLowerCase();
-  const [rows] = await getBQ().query({
-    query: `SELECT * FROM ${itemsSql()} WHERE id = @id AND LOWER(evaluator_email) = @email LIMIT 1`,
-    params: { id: opts.id, email },
-    ...loc(),
+  const rows = await distRows(`SELECT * FROM ${itemsSql()} WHERE id = @id AND LOWER(evaluator_email) = @email LIMIT 1`, {
+    id: opts.id,
+    email,
   });
-  const row = (rows as Record<string, unknown>[])[0];
+  const row = rows[0];
   if (!row) return { error: "항목을 찾을 수 없습니다." };
 
   const cur = rowToBoardItem(row);
@@ -767,17 +670,17 @@ export async function splitScheduleItem(opts: {
     updatedAt: now,
   };
 
-  await getBQ().query({
-    query: `
+  await distRows(
+    `
       UPDATE ${itemsSql()}
       SET
         round_label = @round_label,
         per_person_count = @per_person_count,
         total_count = @total_count,
         members_json = @members_json,
-        updated_at = TIMESTAMP(@updated_at)
+        updated_at = @updated_at::timestamptz
       WHERE id = @id AND LOWER(evaluator_email) = @email`,
-    params: {
+    {
       id: original.id,
       email,
       round_label: original.roundLabel,
@@ -786,8 +689,7 @@ export async function splitScheduleItem(opts: {
       members_json: JSON.stringify(original.members),
       updated_at: now,
     },
-    ...loc(),
-  });
+  );
 
   await insertBoardItem(created);
   return { original, created };
@@ -801,7 +703,6 @@ export async function upsertPersonalEvent(opts: {
     startDate: string;
   };
 }): Promise<EvalOpsPersonalEvent> {
-  await ensureScheduleTables();
   const email = opts.event.ownerEmail.trim().toLowerCase();
   const id = opts.event.id?.trim() || randomUUID();
   const now = new Date().toISOString();
@@ -809,22 +710,18 @@ export async function upsertPersonalEvent(opts: {
   const color = opts.event.color || "#4d82d6";
 
   // delete then insert (upsert)
-  await getBQ().query({
-    query: `DELETE FROM ${personalSql()} WHERE id = @id AND LOWER(owner_email) = @email`,
-    params: { id, email },
-    ...loc(),
-  });
+  await distRows(`DELETE FROM ${personalSql()} WHERE id = @id AND LOWER(owner_email) = @email`, { id, email });
 
-  await getBQ().query({
-    query: `
+  await distRows(
+    `
       INSERT INTO ${personalSql()} (
         id, eval_month, owner_email, title, start_date, end_date, color, created_at, updated_at
       ) VALUES (
         @id, @eval_month, @owner_email, @title,
-        DATE(@start_date), DATE(@end_date), @color,
-        TIMESTAMP(@created_at), TIMESTAMP(@updated_at)
+        @start_date::date, @end_date::date, @color,
+        @created_at::timestamptz, @updated_at::timestamptz
       )`,
-    params: {
+    {
       id,
       eval_month: opts.event.evalMonth,
       owner_email: email,
@@ -835,8 +732,7 @@ export async function upsertPersonalEvent(opts: {
       created_at: opts.event.createdAt || now,
       updated_at: now,
     },
-    ...loc(),
-  });
+  );
 
   return {
     id,
@@ -855,13 +751,8 @@ export async function deletePersonalEvent(opts: {
   id: string;
   ownerEmail: string;
 }): Promise<boolean> {
-  await ensureScheduleTables();
   const email = opts.ownerEmail.trim().toLowerCase();
-  await getBQ().query({
-    query: `DELETE FROM ${personalSql()} WHERE id = @id AND LOWER(owner_email) = @email`,
-    params: { id: opts.id, email },
-    ...loc(),
-  });
+  await distRows(`DELETE FROM ${personalSql()} WHERE id = @id AND LOWER(owner_email) = @email`, { id: opts.id, email });
   return true;
 }
 

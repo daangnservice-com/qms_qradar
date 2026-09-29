@@ -645,7 +645,24 @@ async function createV2Tables(bq: BigQuery, n: Names): Promise<void> {
 async function rename(bq: BigQuery, n: Names, from: string, to: string): Promise<void> {
   if (!(await tableExists(bq, n, from))) throw new Error(`rename source missing: ${from}`);
   if (await tableExists(bq, n, to)) throw new Error(`rename dest exists: ${to}`);
-  await run(bq, n, `alter table ${fq(n, from)} rename to ${to}`, `rename ${from} → ${to}`);
+  try {
+    await run(bq, n, `alter table ${fq(n, from)} rename to ${to}`, `rename ${from} → ${to}`);
+    return;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!/streaming data/i.test(msg)) throw e;
+    console.log(`[eval-item-key] rename blocked by streaming buffer; copy+drop ${from} → ${to}`);
+  }
+  const srcN = await count(bq, n, `select count(*) as n from ${fq(n, from)}`);
+  await run(
+    bq,
+    n,
+    `create table ${fq(n, to)} options (expiration_timestamp = null) as select * from ${fq(n, from)}`,
+    `copy ${from} → ${to}`,
+  );
+  const destN = await count(bq, n, `select count(*) as n from ${fq(n, to)}`);
+  if (srcN !== destN) throw new Error(`copy row mismatch ${from}: src=${srcN} dest=${destN}`);
+  await run(bq, n, `drop table ${fq(n, from)}`, `drop ${from}`);
 }
 
 function viewSql(n: Names): string {

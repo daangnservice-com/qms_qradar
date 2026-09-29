@@ -1,0 +1,18 @@
+---
+description: Local Next.js logs are on the helpdesk-x-watchdog / Kuma monitor, not Cursor terminals
+alwaysApply: true
+---
+
+# Local Next logs (Kuma watchdog)
+
+이 레포의 Next는 Cursor 터미널이 아니라 **helpdesk-x-watchdog**가 띄운다. `next dev`/`next start` 프로세스가 채팅 터미널에 없어도 백엔드는 살아 있을 수 있다.
+
+로그를 볼 때:
+
+1. 파일 꼬리를 읽는다 (1순위). SSE/브라우저보다 빠르다.
+   - `%LOCALAPPDATA%\helpdesk-x-watchdog\dev-server.log`
+   - PowerShell: `Get-Content $env:LOCALAPPDATA\helpdesk-x-watchdog\dev-server.log -Tail 80`
+2. 모니터 UI가 필요하면 `http://127.0.0.1:17301/logs/1` (실시간은 `/logs/1/stream`).
+3. Kuma 대시보드: `http://127.0.0.1:3001/dashboard/1`.
+
+로그에 쿼리스트링 secret·토큰이 있으면 채팅에 그대로 붙이지 않는다.

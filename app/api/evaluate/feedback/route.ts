@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessEvalProgress } from "@/lib/sessionAccessServer";
 import {
   FEEDBACK_SOURCE_SYSTEM,
   listFeedbackSamples,
@@ -19,7 +19,7 @@ type Body = {
 export async function POST(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (!await ensureSessionCanAccessCallQuality(session) || !email) {
+  if (!await ensureSessionCanAccessEvalProgress(session) || !email) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
 
@@ -43,6 +43,7 @@ export async function POST(req: Request): Promise<Response> {
       channel: "feedback",
       sourceSystem: FEEDBACK_SOURCE_SYSTEM,
       sourceId,
+      threadCounts: { feedbackCount: sample.feedbackCount, replyCount: sample.replyCount },
     });
     const row = await saveEvaluationItemResult({
       channel: "feedback",

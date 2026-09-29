@@ -1,7 +1,8 @@
 import { getServerSession } from "next-auth";
+import { ChannelBindingError } from '@/lib/criterionChannels';
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessQualityEval } from "@/lib/sessionAccessServer";
 import {
   ensurePromptTables,
   listPromptVersions,
@@ -26,7 +27,7 @@ function isTemplateKey(v: unknown): v is PromptTemplateKey {
 async function requireAccess() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
+  if (!await ensureSessionCanAccessQualityEval(session)) {
     return { error: NextResponse.json({ error: "권한이 없습니다" }, { status: 403 }) };
   }
   return { email: email! };
@@ -154,6 +155,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ version });
   } catch (e) {
     console.error("[api/prompts POST]", e);
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: e instanceof ChannelBindingError ? 400 : 500 });
   }
 }

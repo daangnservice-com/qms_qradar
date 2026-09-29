@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessCallQualityObserve } from "@/lib/sessionAccessServer";
-import { orgFromParam } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessEvalProgress } from "@/lib/sessionAccessServer";
+import { CALL_EVAL_ORG } from "@/lib/callQualityOrg";
 import { parseCallQualityDeepLink } from "@/lib/callQualityDeepLink";
 import { resolveObserveTarget } from "@/lib/observeResolve";
 import { tryStartEvalJob, finishEvalJob, updateEvalJob } from "@/lib/evalSchedule";
-import { getObserveTranscript, runObserveStt, type ObserveSttEvent } from "@/lib/observeStt";
+import { getObserveTranscript, getObserveTranscriptByVersion, runObserveStt, type ObserveSttEvent } from "@/lib/observeStt";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -51,7 +51,7 @@ export async function GET(req: Request): Promise<Response> {
   if (!session?.user?.email) return new Response("Unauthorized", { status: 401 });
 
   const url = new URL(req.url);
-  if (!await ensureSessionCanAccessCallQualityObserve(session)) return new Response("Forbidden", { status: 403 });
+  if (!await ensureSessionCanAccessEvalProgress(session)) return new Response("Forbidden", { status: 403 });
 
   const deep = parseCallQualityDeepLink(url.searchParams);
   const resolved = await resolveObserveFromInput({
@@ -63,23 +63,28 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   try {
-    const payload = await getObserveTranscript(resolved.conversationId);
-    if (!payload) {
+    const versionId = (url.searchParams.get("versionId") ?? "").trim();
+    const loaded = await getObserveTranscriptByVersion(resolved.conversationId, versionId || null);
+    if (!loaded) {
       return Response.json(
         {
-          error: "STT 전사가 없어요.",
+          error: versionId ? "해당 STT 버전이 없어요." : "STT 전사가 없어요.",
           conversationId: resolved.conversationId,
           phoneInquiryId: resolved.phoneInquiryId,
+          versions: [],
         },
         { status: 404 },
       );
     }
+    const payload = loaded.result;
     return Response.json({
       conversationId: payload.conversationId,
       phoneInquiryId: resolved.phoneInquiryId,
       durationSec: payload.durationSec,
       transcript: payload.transcript,
       sttSource: payload.sttSource,
+      versionId: payload.versionId ?? loaded.versions[0]?.versionId ?? null,
+      versions: loaded.versions,
     });
   } catch (err) {
     console.error("[GET /api/call-quality/observe]", err);
@@ -99,8 +104,8 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "요청 형식이 올바르지 않습니다." }, { status: 400 });
   }
 
-  const org = orgFromParam(body.org);
-  if (!await ensureSessionCanAccessCallQualityObserve(session)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const org = CALL_EVAL_ORG;
+  if (!await ensureSessionCanAccessEvalProgress(session)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const resolved = await resolveObserveFromInput({
     conversationId: String(body.conversationId ?? "").trim() || undefined,

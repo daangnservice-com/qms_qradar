@@ -1,54 +1,44 @@
 import type { Session } from "next-auth";
-import { canAccessPayCallQuality } from "./adminEmails";
-import type { CallQualityOrg } from "./callQualityOrg";
-import {
-  resolveCanAccessAnyCallQuality,
-  resolveCanAccessCallQuality,
-} from "./resolveAccess";
-import {
-  type AccessSession,
-  sessionCanAccessPayCallQuality,
-} from "./sessionAccess";
+import { canAccessEvalOps } from "./adminEmails";
+import { resolveCanAccessMonthlyReport, resolveCanAccessQualityEval } from "./resolveAccess";
+import { type AccessSession, sessionCanAccessEvalProgress } from "./sessionAccess";
 
 /**
- * 서버 게이트용 — JWT true면 통과, 아니면 Directory API(캐시)까지 확인.
+ * 서버 게이트용 — JWT true면 통과, 아니면 Cloud Identity Groups(캐시)까지 확인.
  * 배포 직후·로그인 직후 그룹 반영 누락을 보완한다.
  * google-auth-library(fs) 의존 — 클라이언트에서 import 금지.
  */
-export async function ensureSessionCanAccessCallQuality(
-  session: AccessSession | Session | undefined,
-): Promise<boolean> {
-  if (!session?.user?.email) return false;
-  if (session.access?.callQuality === true) return true;
-  return resolveCanAccessCallQuality(session.user.email);
+function emailOf(session: AccessSession | Session | undefined): string | undefined {
+  return session?.user?.email ?? undefined;
 }
 
-export async function ensureSessionCanAccessAnyCallQuality(
+export async function ensureSessionCanAccessQualityEval(
   session: AccessSession | Session | undefined,
 ): Promise<boolean> {
-  if (!session?.user?.email) return false;
-  if (session.access?.callQuality === true || canAccessPayCallQuality(session.user.email)) return true;
-  return resolveCanAccessAnyCallQuality(session.user.email);
+  if (!emailOf(session)) return false;
+  if (session?.access?.qualityEval === true) return true;
+  return resolveCanAccessQualityEval(emailOf(session));
 }
 
-export async function ensureSessionCanAccessCallQualityObserve(
+export async function ensureSessionCanAccessMonthlyReport(
   session: AccessSession | Session | undefined,
 ): Promise<boolean> {
-  return ensureSessionCanAccessAnyCallQuality(session);
+  if (!emailOf(session)) return false;
+  if (session?.access?.qualityEval === true || session?.access?.monthlyReport === true) return true;
+  return resolveCanAccessMonthlyReport(emailOf(session));
 }
 
-export async function ensureSessionCanAccessOrg(
-  org: CallQualityOrg,
+/** 평가 진행(콜·인앱문의·채팅상담) — 도메인 구성원 전체. Groups 조회 없음. */
+export async function ensureSessionCanAccessEvalProgress(
   session: AccessSession | Session | undefined,
 ): Promise<boolean> {
-  if (org === "pay") return sessionCanAccessPayCallQuality(session);
-  return ensureSessionCanAccessCallQuality(session);
+  return sessionCanAccessEvalProgress(session);
 }
 
-export async function ensureSessionCanAccessCallQualityPlayback(
-  org: CallQualityOrg,
+/** 평가 운영 사이드 섹션(스케줄·검수 현황): 평가 운영 권한 또는 quality eval. */
+export async function ensureSessionCanAccessEvalOpsNav(
   session: AccessSession | Session | undefined,
 ): Promise<boolean> {
-  if (await ensureSessionCanAccessOrg(org, session)) return true;
-  return ensureSessionCanAccessCallQualityObserve(session);
+  if (canAccessEvalOps(emailOf(session))) return true;
+  return ensureSessionCanAccessQualityEval(session);
 }

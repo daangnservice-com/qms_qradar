@@ -16,13 +16,13 @@ import { BigQuery } from "@google-cloud/bigquery";
 
 const BILLING_PROJECT = process.env.GOOGLE_CLOUD_PROJECT_ID ?? "striped-option-493506-a7";
 const PROJECT = process.env.GROWTH_CULTURE_PROJECT_ID ?? "data-proj-470202";
-const TABLE = process.env.EVAL_CASES_TABLE ?? "ds_growth_culture.qradar_evaluation_cases";
+const TABLE = process.env.EVAL_CASES_TABLE ?? "ds_qradar_dev.qradar_evaluation_cases_flat";
 const LOCATION = process.env.GROWTH_CULTURE_LOCATION ?? "US";
 const FROM = process.argv[2] ?? "2026-07-15";
 
 const [DATASET, TABLE_NAME] = TABLE.split(".");
-const CID = "json_value(case_content, '$.genesys_conversation_id')";
-const CALL_DATE = "substr(json_value(case_content, '$.call_start'), 1, 10)";
+const CID = "genesys_conversation_id";
+const CALL_DATE = "format_date('%F', call_date_kst)";
 
 const saJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 const bq = new BigQuery({
@@ -74,7 +74,7 @@ console.log(table(daily, ["call_date", "rows_raw", "cid_null", "ym_null", "app_v
 
 // ③ call_start 원문 표기 — 타임존 접미사(Z / +09:00 / 없음)로 UTC인지 KST인지 판별.
 const raw = await run(`
-  select distinct json_value(case_content, '$.call_start') as call_start_raw
+  select distinct cast(call_start as string) as call_start_raw
   from \`${PROJECT}.${TABLE}\`
   where ${CALL_DATE} >= '${FROM}'
   order by call_start_raw desc
@@ -100,7 +100,7 @@ const inq = await run(`
   select
     date(inquiry_created_at_kst)          as inquiry_date_kst,
     count(*)                              as rows_raw,
-    countif(json_value(case_content, '$.call_start') is null) as call_start_null
+    countif(call_start is null) as call_start_null
   from \`${PROJECT}.${TABLE}\`
   where inquiry_created_at_kst >= datetime '2026-07-15'
   group by inquiry_date_kst

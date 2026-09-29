@@ -13,8 +13,8 @@ import { transcriptToSttSegments } from "./sttReuse";
 import { getLatestStoredTranscript } from "./evalResultStore";
 import { getLatestBatchTranscript } from "./sttBatchStore";
 import { maskPII } from "./pii";
-import { getProductionPrompt, type PromptConfig } from "./promptStore";
-import { templateKeyForOrg, type PromptTemplateKey } from "./promptDefaults";
+import { getProductionPrompt, validatePromptVersionChannels, type PromptConfig } from "./promptStore";
+import { templateKeyForChannel, type PromptTemplateKey } from "./promptDefaults";
 import type { CallQualityOrg } from "./callQualityOrg";
 import type { LlmCallPurpose } from "./llmCallLog";
 import { getAudioStep, getInjectVars, isAudioStepEnabled } from "./audioPipeline";
@@ -95,8 +95,10 @@ export async function evaluateFile(
   }
 > {
   const org = opts.org ?? "growth";
-  const templateKey = opts.templateKey ?? templateKeyForOrg(org);
+  const templateKey = opts.templateKey ?? templateKeyForChannel("phone");
   const promptConfig = opts.promptConfig ?? (await getProductionPrompt(templateKey));
+  if (promptConfig.version.templateKey === 'feedback_eval' || promptConfig.version.templateKey === 'chatcs_eval') throw new Error('전화 평가에는 전화 평가셋만 사용할 수 있습니다');
+  const frozenCriteria = await validatePromptVersionChannels(promptConfig.version);
   const audioCfg = promptConfig.version.audioPipelineConfig;
 
   const silenceStep = getAudioStep(audioCfg, "silence_ffmpeg");
@@ -242,7 +244,7 @@ export async function evaluateFile(
 
   const useChecklist =
     opts.forceChecklist === true || (org === "growth" && promptConfig.version.useChecklist);
-  const criteria = useChecklist ? promptConfig.criteria : undefined;
+  const criteria = useChecklist ? frozenCriteria ?? promptConfig.criteria : undefined;
 
   let scoring: GeminiScoring;
   try {
@@ -282,7 +284,7 @@ export async function evaluateFile(
 
   let highRiskFlags: Evaluation["highRiskFlags"] = [];
   try {
-    const rules = await listHighRiskFlagRules();
+    const rules = await listHighRiskFlagRules({ channel: "phone" });
     highRiskFlags = matchMetricHighRiskFlags(rules, metrics);
   } catch (e) {
     console.warn("[evaluate] highRiskFlags:", e instanceof Error ? e.message : e);

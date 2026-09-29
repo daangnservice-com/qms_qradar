@@ -1,0 +1,31 @@
+---
+description: Client components must not import Node/GCP modules (fs, BigQuery)
+alwaysApply: true
+---
+
+# Client vs server imports
+
+`"use client"` 컴포넌트·훅은 Node builtin(`fs`, `crypto`, `path`)이나 GCP SDK를 쓰는 모듈을 **값으로 import하지 않는다**. 타입이 필요하면 `import type`만 쓴다.
+
+이 규칙을 어기면 Next가 `Module not found: Can't resolve 'fs'` 를 `@google-cloud/bigquery` / `google-auth-library` 스택으로 띄운다. `next.config`에 `fs: false` fallback을 넣어서 숨기지 않는다.
+
+## 기존 분리
+
+| 클라이언트 | 서버 전용 |
+|---|---|
+| `lib/csat.ts` | `lib/csatServer.ts` |
+| `lib/csChecklist.ts` | `lib/csChecklistLoad.ts` |
+| `lib/sessionAccess.ts` | `lib/sessionAccessServer.ts` |
+
+새 BQ/GCS/STT/Groups 조회는 `*Server.ts` 또는 기존 서버 파일에 두고, 화면은 API route를 fetch한다.
+
+```ts
+// BAD — CsatPanel(client)가 BQ까지 bundling
+import { isDsatRate, getCsatByPhoneInquiryId } from "@/lib/csat";
+
+// GOOD
+import { isDsatRate, type CsatRecord } from "@/lib/csat";
+// getCsatByPhoneInquiryId 는 app/api/... 에서만 @/lib/csatServer
+```
+
+서버 모듈 파일명·주석으로 구분을 유지한다 (`csatServer`, `sessionAccessServer`, `csChecklistLoad`). 새 조회 함수를 클라이언트용 파일에 넣지 않는다.

@@ -1,8 +1,7 @@
-import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { getBQ } from "./bigquery";
+// 평가 배분·명단 쓰기. 원천은 서빙 Postgres(테이블 이름은 BQ 와 같다), BQ 는 야간 덤프 사본.
 import { distBq } from "./bqRefs";
+import { distRows, evalMonthWherePg, insertDistRows, replaceDistTable } from "./distDb";
+import { withServingTx } from "./servingDb";
 import {
   applySnapshotEvalItems,
   cellStr,
@@ -10,113 +9,17 @@ import {
   parseRosterRow,
   type EvalOpsBootstrap,
 } from "./evalOpsStore";
-import { calendarMonthOf, evalMonthWhereSql, isDistSetId, nextDistSetId, parseDistSetId } from "./distSet";
+import { calendarMonthOf, isDistSetId, nextDistSetId, parseDistSetId } from "./distSet";
 import { latestHistoryForMonth } from "./distAssign";
 import { finalJudge, isExcludedTeam, judgeTarget } from "./evalTargetJudge";
 import type { DistCfg, DistGp, DistAssignRun, DistRosterPerson, DistTeam } from "./distTypes";
 
-const loc = () => (distBq.location ? { location: distBq.location } : {});
-
-function tableRef(name: string) {
-  return getBQ().dataset(distBq.dataset, { projectId: distBq.projectId }).table(name);
-}
-
-async function tableCols(tableName: string): Promise<Set<string>> {
-  const [meta] = await tableRef(tableName).getMetadata();
-  return new Set(((meta.schema?.fields ?? []) as Array<{ name: string }>).map((f) => f.name));
-}
-
-async function ensureEvalItemsColumn(): Promise<void> {
-  const cols = await tableCols(distBq.tables.evalTargets);
-  if (cols.has("eval_items")) return;
-  await getBQ().query({
-    query: `ALTER TABLE ${distBq.sql(distBq.tables.evalTargets)} ADD COLUMN IF NOT EXISTS eval_items STRING`,
-    ...loc(),
-  });
-}
-
-async function ensureEvaluatorEmailColumns(): Promise<void> {
-  const alters: string[] = [];
-  const evalCols = await tableCols(distBq.tables.evaluators);
-  if (!evalCols.has("evaluator_email")) {
-    alters.push(
-      `ALTER TABLE ${distBq.sql(distBq.tables.evaluators)} ADD COLUMN IF NOT EXISTS evaluator_email STRING`,
-    );
-  }
-  const detailCols = await tableCols(distBq.tables.assignDetail);
-  for (const col of ["evaluator_email", "history_id", "member_id", "member_name"] as const) {
-    if (!detailCols.has(col)) {
-      alters.push(
-        `ALTER TABLE ${distBq.sql(distBq.tables.assignDetail)} ADD COLUMN IF NOT EXISTS ${col} STRING`,
-      );
-    }
-  }
-  for (const q of alters) await getBQ().query({ query: q, ...loc() });
-}
-
-function fitRow(row: Record<string, string>, cols: Set<string>): Record<string, string> {
-  const o: Record<string, string> = {};
-  for (const k of Object.keys(row)) if (cols.has(k)) o[k] = row[k] ?? "";
-  if (cols.has("_ingested_at") && !o._ingested_at) o._ingested_at = new Date().toISOString();
-  if (cols.has("_source_sheet") && !o._source_sheet) o._source_sheet = "qradar";
-  return o;
-}
-
-async function loadNdjson(
-  tableName: string,
-  rows: Record<string, string>[],
-  writeDisposition: "WRITE_TRUNCATE" | "WRITE_APPEND",
-): Promise<void> {
-  const table = tableRef(tableName);
-  const [meta] = await table.getMetadata();
-  const fields = [...((meta.schema?.fields ?? []) as Array<{ name: string; type: string }>)];
-  if (rows.some((r) => r.eval_items != null) && !fields.some((f) => f.name === "eval_items")) {
-    fields.push({ name: "eval_items", type: "STRING" });
-  }
-  const ingestedAt = new Date().toISOString();
-  const normalized = rows.map((r) => {
-    const o: Record<string, string> = {};
-    for (const f of fields) {
-      if (f.name === "_ingested_at") o[f.name] = ingestedAt;
-      else if (f.name === "_source_sheet") o[f.name] = r._source_sheet ?? "qradar";
-      else o[f.name] = r[f.name] ?? "";
-    }
-    return o;
-  });
-  const tmpDir = mkdtempSync(join(tmpdir(), "evalops-"));
-  const ndjsonPath = join(tmpDir, `${tableName}.ndjson`);
-  try {
-    writeFileSync(
-      ndjsonPath,
-      normalized.length ? normalized.map((r) => JSON.stringify(r)).join("\n") + "\n" : "",
-      "utf8",
-    );
-    const [job] = await table.load(ndjsonPath, {
-      sourceFormat: "NEWLINE_DELIMITED_JSON",
-      writeDisposition,
-      autodetect: false,
-      schema: { fields },
-      location: distBq.location || undefined,
-    });
-    const jobAny = job as { promise?: () => Promise<unknown> };
-    if (typeof jobAny.promise === "function") await jobAny.promise.call(job);
-  } finally {
-    try {
-      unlinkSync(ndjsonPath);
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
 async function insertFitted(tableName: string, rows: Record<string, string>[]): Promise<void> {
-  if (!rows.length) return;
-  const cols = await tableCols(tableName);
-  await loadNdjson(tableName, rows.map((r) => fitRow(r, cols)), "WRITE_APPEND");
+  await insertDistRows(tableName, rows);
 }
 
 async function replaceTable(tableName: string, rows: Record<string, string>[]): Promise<void> {
-  await loadNdjson(tableName, rows, "WRITE_TRUNCATE");
+  await replaceDistTable(tableName, rows);
 }
 
 function seoulNow(): { date: string; datetime: string } {
@@ -147,15 +50,14 @@ function parseCalendarMonth(v: string): string {
 }
 
 async function queryRows(query: string, params?: Record<string, unknown>): Promise<Record<string, unknown>[]> {
-  const [rows] = await getBQ().query({ query, params, ...loc() });
-  return (rows as Record<string, unknown>[]) || [];
+  return distRows(query, params ?? {});
 }
 
 export async function assertNotLocked(month: string): Promise<void> {
   const rows = await queryRows(
     `
-      SELECT 1 FROM ${distBq.sql(distBq.tables.monthLocks)}
-      WHERE ${evalMonthWhereSql("eval_month")}
+      SELECT 1 FROM ${distBq.tables.monthLocks}
+      WHERE ${evalMonthWherePg("eval_month")}
       LIMIT 1
     `,
     { month },
@@ -225,7 +127,6 @@ export async function savePlan(input: {
   gps: DistGp[];
   aqtBase: Record<string, number>;
 }): Promise<void> {
-  await ensureEvaluatorEmailColumns();
   await Promise.all([
     replaceTable(distBq.tables.teams, flattenTeams(input.teams)),
     replaceTable(distBq.tables.evaluators, flattenGps(input.gps)),
@@ -241,15 +142,15 @@ async function getKeep(srcMonth: string): Promise<Record<string, Keep>> {
   try {
     const rows = await queryRows(
       `
-        SELECT * FROM ${distBq.sql(distBq.tables.evalTargets)}
-        WHERE ${evalMonthWhereSql("eval_month")}
+        SELECT * FROM ${distBq.tables.evalTargets}
+        WHERE ${evalMonthWherePg("eval_month")}
       `,
       { month: srcMonth },
     );
     const snapRows = await queryRows(
       `
-        SELECT * FROM ${distBq.sql(distBq.tables.evalTargetSnapshots)}
-        WHERE ${evalMonthWhereSql("eval_month")}
+        SELECT * FROM ${distBq.tables.evalTargetSnapshots}
+        WHERE ${evalMonthWherePg("eval_month")}
       `,
       { month: srcMonth },
     ).catch(() => [] as Record<string, unknown>[]);
@@ -371,7 +272,7 @@ export async function createEvalMonth(opts: {
   const keep = copyFrom ? await getKeep(copyFrom) : {};
   let hr: Record<string, unknown>[] = [];
   try {
-    hr = await queryRows(`SELECT * FROM ${distBq.sql(distBq.tables.hrEmployees)} LIMIT 8000`);
+    hr = await queryRows(`SELECT * FROM ${distBq.tables.hrEmployees} ORDER BY _row_id LIMIT 8000`);
   } catch (e) {
     throw new Error(
       `재직자 테이블(${distBq.tables.hrEmployees})을 읽지 못했어요. 시트 마이그레이션 후 다시 시도해주세요. ${
@@ -379,7 +280,6 @@ export async function createEvalMonth(opts: {
       }`,
     );
   }
-  await ensureEvalItemsColumn();
   const rows = hr.map((r) => buildTargetRow(setId, r, keep[cellStr(r.employee_id)])).filter((x): x is Record<string, string> => !!x);
   if (!rows.length) throw new Error("재직자 명단에서 대상 인원을 찾지 못했어요. HR 적재(qradar_hr_employees)를 확인해주세요.");
   await insertFitted(distBq.tables.evalTargets, rows);
@@ -395,23 +295,11 @@ export async function deleteEvalMonth(opts: {
     throw new Error(`${month}은(는) 배분이 확정된 평가 배분 셋이라 삭제할 수 없어요. 같은 월의 새 버전을 만들어주세요.`);
   }
   const params = { month };
-  await Promise.all([
-    getBQ().query({
-      query: `DELETE FROM ${distBq.sql(distBq.tables.evalTargets)} WHERE ${evalMonthWhereSql("eval_month")}`,
-      params,
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `DELETE FROM ${distBq.sql(distBq.tables.evalTargetSnapshots)} WHERE ${evalMonthWhereSql("eval_month")}`,
-      params,
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `DELETE FROM ${distBq.sql(distBq.tables.monthLocks)} WHERE ${evalMonthWhereSql("eval_month")}`,
-      params,
-      ...loc(),
-    }),
-  ]);
+  await withServingTx(async (client) => {
+    for (const table of [distBq.tables.evalTargets, distBq.tables.evalTargetSnapshots, distBq.tables.monthLocks]) {
+      await distRows(`DELETE FROM ${table} WHERE ${evalMonthWherePg("eval_month")}`, params, client);
+    }
+  });
   return { month };
 }
 
@@ -419,17 +307,13 @@ export async function syncEvalMonth(monthRaw: string): Promise<{ month: string; 
   const month = parseSetId(monthRaw);
   await assertNotLocked(month);
   const existing = await queryRows(
-    `SELECT 1 FROM ${distBq.sql(distBq.tables.evalTargets)} WHERE ${evalMonthWhereSql("eval_month")} LIMIT 1`,
+    `SELECT 1 FROM ${distBq.tables.evalTargets} WHERE ${evalMonthWherePg("eval_month")} LIMIT 1`,
     { month },
   );
   if (!existing.length) throw new Error(`${month} 월이 아직 생성되지 않았어요.`);
   const keep = await getKeep(month);
-  await getBQ().query({
-    query: `DELETE FROM ${distBq.sql(distBq.tables.evalTargets)} WHERE ${evalMonthWhereSql("eval_month")}`,
-    params: { month },
-    ...loc(),
-  });
-  const hr = await queryRows(`SELECT * FROM ${distBq.sql(distBq.tables.hrEmployees)} LIMIT 8000`);
+  await distRows(`DELETE FROM ${distBq.tables.evalTargets} WHERE ${evalMonthWherePg("eval_month")}`, { month });
+  const hr = await queryRows(`SELECT * FROM ${distBq.tables.hrEmployees} ORDER BY _row_id LIMIT 8000`);
   const rows = hr.map((r) => buildTargetRow(month, r, keep[cellStr(r.employee_id)])).filter((x): x is Record<string, string> => !!x);
   if (rows.length) await insertFitted(distBq.tables.evalTargets, rows);
   return { month, count: rows.length };
@@ -447,15 +331,14 @@ export async function patchRoster(opts: {
   await assertNotLocked(month);
   const rows = await queryRows(
     `
-      SELECT * FROM ${distBq.sql(distBq.tables.evalTargets)}
-      WHERE ${evalMonthWhereSql("eval_month")}
-        AND CAST(employee_id AS STRING) = @id
+      SELECT * FROM ${distBq.tables.evalTargets}
+      WHERE ${evalMonthWherePg("eval_month")}
+        AND employee_id::text = @id
       LIMIT 1
     `,
     { month, id: String(opts.employeeId) },
   );
   if (!rows.length) throw new Error(`${month} / 사번 ${opts.employeeId} 행을 찾지 못했어요.`);
-  await ensureEvalItemsColumn();
   const cur = parseRosterRow(rows[0]);
   const manual = opts.manual !== undefined && opts.manual !== null ? String(opts.manual).replace(/[✅❌\s]/g, "") : cur.manualJudge;
   const memo = opts.memo !== undefined && opts.memo !== null ? String(opts.memo) : cur.memo;
@@ -463,19 +346,19 @@ export async function patchRoster(opts: {
     opts.evalItems !== undefined && opts.evalItems !== null ? opts.evalItems.join(",") : cur.evalItems.join(",");
   const fin = manual === "대상" ? "대상" : manual === "제외" ? "제외" : cur.autoJudge.replace(/[✅❌\s]/g, "") || cur.finalJudge;
   const { datetime } = seoulNow();
-  await getBQ().query({
-    query: `
-      UPDATE ${distBq.sql(distBq.tables.evalTargets)}
+  await distRows(
+    `
+      UPDATE ${distBq.tables.evalTargets}
       SET manual_judge = @manual,
           memo = @memo,
           eval_items = @evalItems,
           final_judge = @final,
           edited_by = @by,
           edited_at = @at
-      WHERE ${evalMonthWhereSql("eval_month")}
-        AND CAST(employee_id AS STRING) = @id
+      WHERE ${evalMonthWherePg("eval_month")}
+        AND employee_id::text = @id
     `,
-    params: {
+    {
       manual,
       memo,
       evalItems,
@@ -485,8 +368,7 @@ export async function patchRoster(opts: {
       month,
       id: String(opts.employeeId),
     },
-    ...loc(),
-  });
+  );
 }
 
 export async function confirmTeam(opts: {
@@ -500,22 +382,21 @@ export async function confirmTeam(opts: {
   if (!team) throw new Error("팀이 선택되지 않았어요.");
   const roster = await queryRows(
     `
-      SELECT * FROM ${distBq.sql(distBq.tables.evalTargets)}
-      WHERE ${evalMonthWhereSql("eval_month")}
-        AND CAST(team_name AS STRING) = @team
+      SELECT * FROM ${distBq.tables.evalTargets}
+      WHERE ${evalMonthWherePg("eval_month")}
+        AND team_name::text = @team
     `,
     { month, team },
   );
   if (!roster.length) throw new Error(`"${team}" 팀 인원이 ${month} 명단에 없어요.`);
-  await getBQ().query({
-    query: `
-      DELETE FROM ${distBq.sql(distBq.tables.evalTargetSnapshots)}
-      WHERE ${evalMonthWhereSql("eval_month")}
-        AND CAST(team_name AS STRING) = @team
+  await distRows(
+    `
+      DELETE FROM ${distBq.tables.evalTargetSnapshots}
+      WHERE ${evalMonthWherePg("eval_month")}
+        AND team_name::text = @team
     `,
-    params: { month, team },
-    ...loc(),
-  });
+    { month, team },
+  );
   const { datetime } = seoulNow();
   const snaps = roster.map((r) => {
     const p = parseRosterRow(r);
@@ -557,7 +438,7 @@ export async function lockMonth(opts: { month: string; editor: string; roster: D
 
 async function nextHistoryId(dateStr: string): Promise<string> {
   const rows = await queryRows(
-    `SELECT CAST(history_id AS STRING) AS history_id FROM ${distBq.sql(distBq.tables.assignHistory)} LIMIT 400`,
+    `SELECT history_id::text AS history_id FROM ${distBq.tables.assignHistory} LIMIT 400`,
   );
   const re = new RegExp(`^${dateStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}_ver(\\d+)$`);
   let maxVer = 0;
@@ -579,7 +460,7 @@ export async function confirmAssign(opts: {
 }): Promise<{ id: string }> {
   const month = parseSetId(opts.month);
   const already = await queryRows(
-    `SELECT 1 FROM ${distBq.sql(distBq.tables.assignHistory)} WHERE ${evalMonthWhereSql("eval_month")} LIMIT 1`,
+    `SELECT 1 FROM ${distBq.tables.assignHistory} WHERE ${evalMonthWherePg("eval_month")} LIMIT 1`,
     { month },
   );
   if (already.length) {
@@ -587,7 +468,6 @@ export async function confirmAssign(opts: {
   }
   const { date, datetime } = seoulNow();
   const id = await nextHistoryId(date);
-  await ensureEvaluatorEmailColumns();
   const emailByGp = new Map(opts.gps.map((g) => [g.name, (g.email ?? "").toLowerCase()]));
   const ratios = opts.gps.filter((g) => g.cs).map((g) => ({ name: g.name, ratio: g.ratio }));
   const meta = {

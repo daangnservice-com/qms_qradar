@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { getBQ } from "./bigquery";
+import { ChannelBindingError, validateChannelBindings, readExposureChannels } from './criterionChannels';
 import { promptBq } from "./bqRefs";
-import { addColumnsIfMissing } from "./bqSchema";
+import { servingRows } from "./servingDb";
 import {
   PROMPT_TEMPLATE_KEYS,
   defaultCriteria,
   defaultPromptSeed,
   type PromptTemplateKey,
+  promptChannelForTemplateKey,
 } from "./promptDefaults";
 import { parseCriteriaJson, parseSchemaJson } from "./promptRender";
 import { parseOutputSchemaConfig, buildResponseSchemaFromConfig } from "./outputSchema";
@@ -15,8 +16,10 @@ import {
   buildCriteriaSnapshot,
   seedDraftCriterionPromptsFromChecklist,
   listCriterionPrompts,
+  listFieldKeys,
 } from "./criterionStore";
-import { loadEvalSetCriteria, syncEvalSetCriteria } from "./evaluationDimensionStore";
+import { syncEvalSetCriteria } from "./evaluationDimensionStore";
+import { validateChecklistCoverage } from './checklistCoverage';
 import type { CsCriterion } from "./csChecklist";
 import type {
   AudioPipelineConfig,
@@ -38,89 +41,23 @@ import {
 export type { PromptStatus, PromptVersion } from "./promptTypes";
 
 export interface PromptConfig {
+  fieldKeys?: import('./promptTypes').PromptFieldKey[];
   version: PromptVersion;
   criteria: CsCriterion[];
   responseSchema: object;
 }
 
+// 평가셋 버전·배포 이력. 원천은 서빙 Postgres(테이블 이름은 BQ 와 같다), BQ 는 야간 덤프 사본.
 const VERSIONS = promptBq.tables.versions;
 const HISTORY = promptBq.tables.prodHistory;
-const loc = () => (promptBq.location ? { location: promptBq.location } : {});
-
-const VERSIONS_SCHEMA = [
-  { name: "version_id", type: "STRING", mode: "REQUIRED" },
-  { name: "template_key", type: "STRING", mode: "REQUIRED" },
-  { name: "version_label", type: "STRING", mode: "NULLABLE" },
-  { name: "status", type: "STRING", mode: "REQUIRED" },
-  { name: "base_prompt", type: "STRING", mode: "NULLABLE" },
-  { name: "checklist_template", type: "STRING", mode: "NULLABLE" },
-  { name: "response_schema_json", type: "STRING", mode: "NULLABLE" },
-  { name: "criteria_json", type: "STRING", mode: "NULLABLE" },
-  { name: "selected_criterion_ids", type: "STRING", mode: "NULLABLE" },
-  { name: "criterion_bindings_json", type: "STRING", mode: "NULLABLE" },
-  { name: "output_schema_config_json", type: "STRING", mode: "NULLABLE" },
-  { name: "result_parse_config_json", type: "STRING", mode: "NULLABLE" },
-  { name: "audio_pipeline_config_json", type: "STRING", mode: "NULLABLE" },
-  { name: "use_checklist", type: "BOOLEAN", mode: "NULLABLE" },
-  { name: "change_note", type: "STRING", mode: "NULLABLE" },
-  { name: "created_at", type: "TIMESTAMP", mode: "REQUIRED" },
-  { name: "created_by", type: "STRING", mode: "NULLABLE" },
-] as const;
-
-const HISTORY_SCHEMA = [
-  { name: "event_id", type: "STRING", mode: "REQUIRED" },
-  { name: "template_key", type: "STRING", mode: "REQUIRED" },
-  { name: "from_version_id", type: "STRING", mode: "NULLABLE" },
-  { name: "to_version_id", type: "STRING", mode: "REQUIRED" },
-  { name: "action", type: "STRING", mode: "NULLABLE" },
-  { name: "note", type: "STRING", mode: "NULLABLE" },
-  { name: "changed_at", type: "TIMESTAMP", mode: "REQUIRED" },
-  { name: "changed_by", type: "STRING", mode: "NULLABLE" },
-] as const;
-
-const isAlreadyExists = (e: unknown) =>
-  (e as { code?: number })?.code === 409 || /already exists/i.test(e instanceof Error ? e.message : String(e));
 
 let _ensured: Promise<void> | null = null;
 
+/** 기준 테이블 시드와 기본 평가셋 시드. 프로세스당 한 번. */
 export function ensurePromptTables(): Promise<void> {
   if (!_ensured) {
     _ensured = (async () => {
       await ensureCriterionTables();
-      const bq = getBQ();
-      const ds = bq.dataset(promptBq.dataset, { projectId: promptBq.projectId });
-      const [dsExists] = await ds.exists();
-      if (!dsExists) {
-        await ds.create({ location: promptBq.location ?? "US" }).catch((e) => {
-          if (!isAlreadyExists(e)) throw e;
-        });
-      }
-      for (const [name, schema] of [
-        [VERSIONS, VERSIONS_SCHEMA],
-        [HISTORY, HISTORY_SCHEMA],
-      ] as const) {
-        const t = ds.table(name);
-        const [exists] = await t.exists();
-        if (!exists) {
-          await t
-            .create({ schema: schema as unknown as { name: string; type: string; mode: string }[] })
-            .catch((e) => {
-              if (!isAlreadyExists(e)) throw e;
-            });
-        }
-      }
-      // 스키마에 이미 포함된 컬럼은 metadata 확인 후 없을 때만 ALTER (quota 절약)
-      await addColumnsIfMissing(
-        ds.table(VERSIONS),
-        [
-          { name: "selected_criterion_ids", type: "STRING" },
-          { name: "output_schema_config_json", type: "STRING" },
-          { name: "criterion_bindings_json", type: "STRING" },
-          { name: "result_parse_config_json", type: "STRING" },
-          { name: "audio_pipeline_config_json", type: "STRING" },
-        ],
-        { location: promptBq.location ?? undefined, logTag: "promptStore" },
-      );
       await seedIfEmpty();
     })().catch((err) => {
       _ensured = null;
@@ -131,12 +68,8 @@ export function ensurePromptTables(): Promise<void> {
 }
 
 async function seedIfEmpty(): Promise<void> {
-  const sql = promptBq.sql(VERSIONS);
-  const [rows] = await getBQ().query({
-    query: `select count(*) as n from ${sql}`,
-    ...loc(),
-  });
-  const n = Number((rows as { n: number }[])[0]?.n ?? 0);
+  const rows = await servingRows<{ n: number }>(`select count(*)::int as n from ${VERSIONS}`);
+  const n = Number(rows[0]?.n ?? 0);
   if (n > 0) return;
   for (const key of PROMPT_TEMPLATE_KEYS) {
     const seed = defaultPromptSeed(key);
@@ -157,7 +90,7 @@ async function seedIfEmpty(): Promise<void> {
       createdBy: "system-seed",
     });
   }
-  console.log(`[promptStore] seeded ${PROMPT_TEMPLATE_KEYS.length} production versions into ${promptBq.fq(VERSIONS)}`);
+  console.log(`[promptStore] seeded ${PROMPT_TEMPLATE_KEYS.length} production versions into ${VERSIONS}`);
 }
 
 function parseSelectedIds(raw: unknown): number[] {
@@ -240,6 +173,7 @@ function rowToVersion(r: Record<string, unknown>): PromptVersion {
   }
   return {
     versionId: String(r.version_id),
+    legacyChannelSnapshotJson: r.legacy_channel_snapshot_json ? String(r.legacy_channel_snapshot_json) : undefined,
     templateKey: String(r.template_key) as PromptTemplateKey,
     versionLabel: String(r.version_label ?? ""),
     status: String(r.status) as PromptStatus,
@@ -282,10 +216,9 @@ async function insertVersion(input: {
 
   const versionId = input.versionId ?? randomUUID();
   const createdAt = new Date().toISOString();
-  const sql = promptBq.sql(VERSIONS);
-  await getBQ().query({
-    query: `
-      insert into ${sql}
+  await servingRows(
+    `
+      insert into ${VERSIONS}
         (version_id, template_key, version_label, status, base_prompt, checklist_template,
          response_schema_json, criteria_json, selected_criterion_ids, criterion_bindings_json,
          output_schema_config_json, result_parse_config_json, audio_pipeline_config_json,
@@ -294,9 +227,9 @@ async function insertVersion(input: {
         (@version_id, @template_key, @version_label, @status, @base_prompt, @checklist_template,
          @response_schema_json, @criteria_json, @selected_criterion_ids, @criterion_bindings_json,
          @output_schema_config_json, @result_parse_config_json, @audio_pipeline_config_json,
-         @use_checklist, @change_note, timestamp(@created_at), @created_by)
+         @use_checklist, @change_note, @created_at::timestamptz, @created_by)
     `,
-    params: {
+    {
       version_id: versionId,
       template_key: input.templateKey,
       version_label: input.versionLabel,
@@ -315,14 +248,11 @@ async function insertVersion(input: {
       created_at: createdAt,
       created_by: input.createdBy,
     },
-    ...loc(),
-  });
+  );
   await syncEvalSetCriteria({
     evalSetId: versionId,
     bindings: input.criterionBindings,
-  }).catch((e) =>
-    console.warn("[promptStore] normalized eval-set criteria sync:", e instanceof Error ? e.message : e),
-  );
+  });
   return {
     versionId,
     templateKey: input.templateKey,
@@ -349,30 +279,25 @@ export async function listPromptVersions(
   opts?: { ensure?: boolean },
 ): Promise<PromptVersion[]> {
   if (opts?.ensure !== false) await ensurePromptTables();
-  const sql = promptBq.sql(VERSIONS);
-  const [rows] = await getBQ().query({
-    query: `
+  const rows = await servingRows(
+    `
       select *
-      from ${sql}
+      from ${VERSIONS}
       where template_key = @template_key
       order by created_at desc
       limit 100
     `,
-    params: { template_key: templateKey },
-    ...loc(),
-  });
-  return (rows as Record<string, unknown>[]).map(rowToVersion);
+    { template_key: templateKey },
+  );
+  return rows.map(rowToVersion);
 }
 
-export async function getPromptVersion(versionId: string): Promise<PromptVersion | null> {
-  await ensurePromptTables();
-  const sql = promptBq.sql(VERSIONS);
-  const [rows] = await getBQ().query({
-    query: `select * from ${sql} where version_id = @version_id limit 1`,
-    params: { version_id: versionId },
-    ...loc(),
+export async function getPromptVersion(versionId: string, opts?: { ensure?: boolean }): Promise<PromptVersion | null> {
+  if (opts?.ensure !== false) await ensurePromptTables();
+  const rows = await servingRows(`select * from ${VERSIONS} where version_id = @version_id limit 1`, {
+    version_id: versionId,
   });
-  const r = (rows as Record<string, unknown>[])[0];
+  const r = rows[0];
   return r ? rowToVersion(r) : null;
 }
 
@@ -386,23 +311,26 @@ export async function getProductionPrompt(
     if (opts?.seedDraft) {
       await seedDraftCriterionPromptsFromChecklist().catch(() => {});
     }
-    const sql = promptBq.sql(VERSIONS);
-    const [rows] = await getBQ().query({
-      query: `
+    const rows = await servingRows(
+      `
         select *
-        from ${sql}
+        from ${VERSIONS}
         where template_key = @template_key and status = 'production'
         order by created_at desc
         limit 1
       `,
-      params: { template_key: templateKey },
-      ...loc(),
-    });
-    const r = (rows as Record<string, unknown>[])[0];
+      { template_key: templateKey },
+    );
+    const r = rows[0];
     if (r) {
-      return await promptConfigFromVersion(rowToVersion(r));
+      try {
+        return await promptConfigFromVersion(rowToVersion(r));
+      } catch (error) {
+        throw new ChannelBindingError(`저장된 production 평가셋 검증 실패: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   } catch (e) {
+    if (e instanceof ChannelBindingError) throw e;
     console.warn(
       `[promptStore] getProductionPrompt failed — hardcoded fallback: ${e instanceof Error ? e.message : String(e)}`,
     );
@@ -411,38 +339,39 @@ export async function getProductionPrompt(
 }
 
 /** version_id 로 PromptConfig 로드 (draft/archived 포함). 없으면 null. */
-export async function getPromptConfigByVersionId(versionId: string): Promise<PromptConfig | null> {
+export async function getPromptConfigByVersionId(versionId: string, opts?: { ensure?: boolean }): Promise<PromptConfig | null> {
   const id = (versionId ?? "").trim();
   if (!id) return null;
-  const version = await getPromptVersion(id);
+  const version = await getPromptVersion(id, opts);
   if (!version) return null;
   return promptConfigFromVersion(version);
 }
 
 async function promptConfigFromVersion(version: PromptVersion): Promise<PromptConfig> {
-  let criteria = parseCriteriaJson(version.criteriaJson);
-  const normalizedCriteria = await loadEvalSetCriteria(version.versionId);
-  if (normalizedCriteria?.length) criteria = normalizedCriteria;
-  const weak =
-    version.useChecklist &&
-    (!criteria.length ||
-      criteria.every((c) => !(c.fields?.definition?.trim() || c.hint?.trim())));
-  if (weak) {
-    criteria = await buildCriteriaSnapshot(
-      version.criterionBindings?.length
-        ? version.criterionBindings
-        : defaultCriteria(true).map((c) => ({
-            criterionId: c.id,
-            promptId: "",
-            enabled: true,
-          })),
-    );
-  }
+  const frozen = await validatePromptVersionChannels(version);
+  if (frozen) return { version, criteria: frozen, responseSchema: parseSchemaJson(version.responseSchemaJson) };
+  // Persisted snapshots are authoritative. Never rebuild from a latest detail at read time.
+  const criteria = parseCriteriaJson(version.criteriaJson);
+  if (version.useChecklist) validateChecklistCoverage(criteria, version.criterionBindings.filter((b) => b.enabled).map((b) => b.criterionId));
   return {
     version,
     criteria,
+    fieldKeys: await listFieldKeys(),
     responseSchema: parseSchemaJson(version.responseSchemaJson),
   };
+}
+
+/** Legacy snapshots are granted only by the migration; new saves cannot grant compatibility. */
+export async function validatePromptVersionChannels(version: PromptVersion): Promise<CsCriterion[] | null> {
+  if (version.legacyChannelSnapshotJson) {
+    const frozen = JSON.parse(version.legacyChannelSnapshotJson);
+    if (frozen.templateKey !== version.templateKey || JSON.stringify(frozen.bindings) !== JSON.stringify(version.criterionBindings)) {
+      throw new ChannelBindingError('기존 평가셋 호환 스냅샷과 바인딩이 다릅니다');
+    }
+    return parseCriteriaJson(JSON.stringify(frozen.criteria));
+  }
+  await validateChannelBindings(version.criterionBindings, await listCriterionPrompts(), promptChannelForTemplateKey(version.templateKey));
+  return null;
 }
 
 /** CS_CHECKLIST 기반 초안 평가셋을 production 으로 저장(기존 production demote) */
@@ -460,9 +389,10 @@ export async function seedChecklistDraftEvalSet(input: {
   const prompts = await listCriterionPrompts();
   const latestByCrit = new Map<number, string>();
   for (const p of prompts) {
+    if (!readExposureChannels(p.exposureChannels).includes('phone')) continue;
     const cur = latestByCrit.get(p.criterionId);
-    // list is ordered by updated_at desc per earlier query — first wins
-    if (!cur) latestByCrit.set(p.criterionId, p.promptId);
+    if (cur) throw new ChannelBindingError(`[${p.criterionId}] 상세 버전이 여러 개입니다. 평가셋 편집에서 직접 선택하세요`);
+    latestByCrit.set(p.criterionId, p.promptId);
   }
   const criteria = defaultCriteria(true);
   const criterionBindings: EvalCriterionBinding[] = criteria.map((c) => ({
@@ -537,7 +467,7 @@ export async function savePromptVersion(input: {
 }): Promise<PromptVersion> {
   await ensurePromptTables();
   const status: PromptStatus = input.promote ? "production" : "draft";
-  if (input.promote) await demoteCurrentProduction(input.templateKey);
+  await validateChannelBindings(input.criterionBindings, await listCriterionPrompts(), promptChannelForTemplateKey(input.templateKey));
 
   const existing = await listPromptVersions(input.templateKey, { ensure: false });
   const { buildCriterionVersionLabel, parseVersionLabel } = await import("./criterionVersionLabel");
@@ -564,8 +494,9 @@ export async function savePromptVersion(input: {
   const responseSchemaJson = JSON.stringify(buildResponseSchemaFromConfig(outputSchemaConfig), null, 2);
   const criterionBindings = input.criterionBindings;
   const selectedCriterionIds = criterionBindings.filter((b) => b.enabled).map((b) => b.criterionId);
-  const criteria = input.useChecklist ? await buildCriteriaSnapshot(criterionBindings) : [];
+  const criteria = input.useChecklist ? await buildCriteriaSnapshot(criterionBindings, promptChannelForTemplateKey(input.templateKey)) : [];
   const criteriaJson = JSON.stringify(criteria, null, 2);
+  if (input.promote) await demoteCurrentProduction(input.templateKey);
 
   const v = await insertVersion({
     templateKey: input.templateKey,
@@ -609,6 +540,7 @@ export async function setProductionVersion(input: {
   if (!target || target.templateKey !== input.templateKey) {
     throw new Error("버전을 찾을 수 없습니다");
   }
+  validateChannelBindings(target.criterionBindings, await listCriterionPrompts(), promptChannelForTemplateKey(target.templateKey));
   const prev = await getProductionPrompt(input.templateKey);
   const prevId = prev.version.versionId === "hardcoded-fallback" ? null : prev.version.versionId;
 
@@ -642,17 +574,15 @@ export async function setProductionVersion(input: {
 }
 
 async function demoteCurrentProduction(templateKey: PromptTemplateKey): Promise<void> {
-  const sql = promptBq.sql(VERSIONS);
   try {
-    await getBQ().query({
-      query: `
-        update ${sql}
+    await servingRows(
+      `
+        update ${VERSIONS}
         set status = 'archived'
         where template_key = @template_key and status = 'production'
       `,
-      params: { template_key: templateKey },
-      ...loc(),
-    });
+      { template_key: templateKey },
+    );
   } catch (e) {
     console.warn(
       `[promptStore] demoteCurrentProduction UPDATE failed: ${e instanceof Error ? e.message : String(e)}`,
@@ -668,15 +598,14 @@ async function appendProdHistory(input: {
   note: string;
   changedBy: string;
 }): Promise<void> {
-  const sql = promptBq.sql(HISTORY);
-  await getBQ().query({
-    query: `
-      insert into ${sql}
-        (event_id, template_key, from_version_id, to_version_id, action, note, changed_at, changed_by)
+  await servingRows(
+    `
+      insert into ${HISTORY}
+        (event_id, template_key, from_version_id, to_version_id, "action", note, changed_at, changed_by)
       values
-        (@event_id, @template_key, @from_version_id, @to_version_id, @action, @note, timestamp(@changed_at), @changed_by)
+        (@event_id, @template_key, @from_version_id, @to_version_id, @action, @note, @changed_at::timestamptz, @changed_by)
     `,
-    params: {
+    {
       event_id: randomUUID(),
       template_key: input.templateKey,
       from_version_id: input.fromVersionId,
@@ -686,16 +615,5 @@ async function appendProdHistory(input: {
       changed_at: new Date().toISOString(),
       changed_by: input.changedBy,
     },
-    types: {
-      event_id: "STRING",
-      template_key: "STRING",
-      from_version_id: "STRING",
-      to_version_id: "STRING",
-      action: "STRING",
-      note: "STRING",
-      changed_at: "STRING",
-      changed_by: "STRING",
-    },
-    ...loc(),
-  });
+  );
 }

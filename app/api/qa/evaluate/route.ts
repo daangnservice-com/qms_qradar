@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessQualityEval } from "@/lib/sessionAccessServer";
 import { evaluateFile } from "@/lib/evaluate";
 import { ensureLocalQaAudio, removeLocalQaAudio, cleanupPaths } from "@/lib/qaAudio";
 import { saveQaEvalResult, listQaReferenceSamples } from "@/lib/qaStore";
@@ -19,7 +19,6 @@ type Body = {
   conversationIds?: string[];
   keepAudio?: boolean;
   minSilenceSec?: number;
-  templateKey?: string;
   /** 특정 평가표 버전으로 평가. 없으면 production */
   versionId?: string;
 };
@@ -27,7 +26,7 @@ type Body = {
 export async function POST(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
+  if (!await ensureSessionCanAccessQualityEval(session)) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
 
@@ -50,7 +49,7 @@ export async function POST(req: Request): Promise<Response> {
   const keepAudio = Boolean(body.keepAudio);
   const minSilenceSec = Math.min(10, Math.max(1, Number(body.minSilenceSec ?? 3) || 3));
   const noiseDb = numEnv("SILENCE_NOISE_DB", -30);
-  const templateKey = (body.templateKey as "call_eval_growth" | "call_eval_pay") || "call_eval_growth";
+  const templateKey = "call_eval_growth" as const;
   const requestedVersionId = (body.versionId ?? "").trim() || null;
 
   const refs = await listQaReferenceSamples(2000);

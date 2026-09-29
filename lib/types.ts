@@ -18,7 +18,13 @@ export interface HighRiskFlagHit {
   label: string;
   reason: string;
 }
-export interface TranscriptSegment { atSec: number; speaker: string; text: string; }
+export interface TranscriptSegment {
+  atSec: number;
+  speaker: string;
+  text: string;
+  /** 이 줄의 첫 단어 시각. 재생 클릭은 세그먼트 시작 대신 이 값을 쓴다. */
+  wordAtSec?: number;
+}
 // CS 영역 체크리스트 1개 항목의 AI 판정. id=evaluation_criterions_id(lib/csChecklist.ts).
 export interface ChecklistEvidence { atSec: number; quote: string; }
 /** 항목 판정: 평가 항목 1개가 이 케이스에서 위반인지. id=evaluation_criterions_id. */
@@ -124,20 +130,22 @@ export interface SampleFilters {
    * 수기 검수 완료분은 제외.
    */
   mineOnly?: boolean;
+  /** 수기 검수 공용 레저부어(할당된 콜). */
+  reviewRequestedOnly?: boolean;
 }
 
-// BigQuery 평가 테이블(qradar_evaluation_cases)에서 고른 콜 분석 대상 샘플 1건.
+// BigQuery 평가 테이블(qradar_evaluation_cases_flat)에서 고른 콜 분석 대상 샘플 1건.
 export interface EvaluationSample {
   conversationId: string; // Genesys conversation_id → 녹취 확보 키
   phoneInquiryId: string; // 상담이력 ID
   adminName: string; // 상담사 닉네임(Admin Name)
   team: string; // 상담사 소속(operator_renewal_team_name)
   category: string; // 카테고리
-  callDate: string; // 콜 날짜(call_start를 KST로 변환, YYYY-MM-DD)
+  callDate: string; // 콜 날짜(KST, YYYY-MM-DD). 적재 컬럼 call_date_kst
   /** 통화 시작 일시(KST, YYYY-MM-DD HH:MM:SS). 목록 표시용 — 없으면 callDate로 폴백 */
   callStartKst?: string;
   contentSnippet: string; // 상담이력 미리보기(앞부분)
-  callDurationSec: number | null; // 통화 길이(초). call_end-call_start 우선, minutes_taken 폴백
+  callDurationSec: number | null; // 통화 길이(초). 적재 컬럼 duration_sec
   analyzed: boolean; // AI 평가 완료 여부
   reviewCompleted?: boolean; // 수기 검수 완료 여부
   /** AI 검토필요 라벨 (평가 완료 시) */

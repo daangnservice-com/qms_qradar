@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessQualityEval } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessMonthlyReport } from "@/lib/sessionAccessServer";
 import { buildMonthlyReportDraft } from "@/lib/monthlyReportDraft";
 import {
   deleteSavedMonthlyReportDraft,
@@ -65,7 +65,7 @@ async function generateDraft(month: string, team: string, specialNotes: string) 
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!(await ensureSessionCanAccessQualityEval(session))) {
+  if (!(await ensureSessionCanAccessMonthlyReport(session))) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   try {
@@ -104,7 +104,7 @@ export async function GET(req: Request) {
 
 export async function PUT(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!(await ensureSessionCanAccessQualityEval(session))) {
+  if (!(await ensureSessionCanAccessMonthlyReport(session))) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   try {
@@ -161,7 +161,7 @@ export async function PUT(req: Request) {
 
 export async function DELETE(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!(await ensureSessionCanAccessQualityEval(session))) {
+  if (!(await ensureSessionCanAccessMonthlyReport(session))) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   try {

@@ -1,9 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { getBQ } from "./bigquery";
-import { growthBq, qradarTable } from "./bqRefs";
-import { isEvalItemKeyV2, phoneIdEqSql, phoneIdInSql, phoneScopeParams } from "./evalItemKey";
-import { EVAL_HUMAN_REVIEWS_V2_SCHEMA } from "./evalSchemaV2";
-import { PHONE_SOURCE_SYSTEM } from "./evaluationChannel";
+import { refreshReviewerEmails } from "./callServingStore";
+import { servingQuery } from "./servingDb";
 import {
   isBestMarkCategoryId,
   normalizeJudgment,
@@ -32,55 +29,38 @@ export {
   annotationFinalCold,
 } from "./evalReviewTypes";
 
-const TABLE = qradarTable("eval_human_reviews");
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
-const reviewTable = () =>
-  getBQ().dataset(growthBq.dataset, { projectId: growthBq.projectId }).table(TABLE);
-
-const SCHEMA = [
-  { name: "annotation_id", type: "STRING", mode: "REQUIRED" },
-  { name: "conversation_id", type: "STRING", mode: "REQUIRED" },
-  { name: "payload_json", type: "STRING", mode: "REQUIRED" },
-  { name: "updated_at", type: "TIMESTAMP", mode: "REQUIRED" },
-  { name: "updated_by", type: "STRING", mode: "NULLABLE" },
-  { name: "deleted", type: "BOOLEAN", mode: "NULLABLE" },
-] as const;
-
-const isAlreadyExists = (e: unknown) =>
-  (e as { code?: number })?.code === 409 || /already exists/i.test(e instanceof Error ? e.message : String(e));
-
-let _ensured: Promise<void> | null = null;
-
 export function ensureEvalReviewTable(): Promise<void> {
-  if (!_ensured) {
-    _ensured = (async () => {
-      const bq = getBQ();
-      const ds = bq.dataset(growthBq.dataset, { projectId: growthBq.projectId });
-      const [dsExists] = await ds.exists();
-      if (!dsExists) {
-        await ds.create({ location: growthBq.location ?? "US" }).catch((e) => {
-          if (!isAlreadyExists(e)) throw e;
-        });
-      }
-      const t = ds.table(TABLE);
-      const [exists] = await t.exists();
-      if (!exists) {
-        await t
-          .create({
-            schema: EVAL_HUMAN_REVIEWS_V2_SCHEMA,
-            timePartitioning: { type: "DAY", field: "updated_at" },
-            clustering: { fields: ["channel", "source_id"] },
-          })
-          .catch((e) => {
-            if (!isAlreadyExists(e)) throw e;
-          });
-      }
-    })().catch((e) => {
-      _ensured = null;
-      throw e;
-    });
-  }
-  return _ensured;
+  return Promise.resolve();
+}
+
+function asReviewRaw(r: Record<string, unknown>): Record<string, unknown> {
+  const payload = r.payload_json;
+  return {
+    ...r,
+    annotation_id: r.annotation_id ?? (payload && typeof payload === "object" ? (payload as { annotationId?: string }).annotationId : ""),
+    payload_json: typeof payload === "string" ? payload : JSON.stringify(payload ?? {}),
+    conversation_id: r.conversation_id,
+    source_id: r.conversation_id,
+  };
+}
+
+async function upsertReview(row: EvalReviewAnnotation, deleted: boolean): Promise<void> {
+  await servingQuery(
+    `
+    insert into serving_human_reviews
+      (annotation_id, conversation_id, payload_json, updated_at, updated_by, deleted, exported_at)
+    values ($1, $2, $3::jsonb, $4::timestamptz, $5, $6, null)
+    on conflict (annotation_id) do update set
+      conversation_id = excluded.conversation_id,
+      payload_json = excluded.payload_json,
+      updated_at = excluded.updated_at,
+      updated_by = excluded.updated_by,
+      deleted = excluded.deleted,
+      exported_at = null
+    `,
+    [row.annotationId, row.conversationId, JSON.stringify(row), row.updatedAt, row.updatedBy, deleted],
+  );
+  await refreshReviewerEmails(row.conversationId);
 }
 
 function rowToAnnotation(r: Record<string, unknown>): EvalReviewAnnotation | null {
@@ -145,25 +125,16 @@ function collectLatestAnnotations(rows: Record<string, unknown>[]): EvalReviewAn
 
 /** conversation 기준 최신 비삭제 주석 */
 export async function listEvalReviews(conversationId: string): Promise<EvalReviewAnnotation[]> {
-  await ensureEvalReviewTable();
-  const sql = growthBq.resultsSql(TABLE);
-  const v2 = await isEvalItemKeyV2();
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${sql}
-        where ${phoneIdEqSql(v2, "conversation_id")}
-        order by updated_at desc
-      `,
-      params: { conversation_id: conversationId, ...phoneScopeParams(v2) },
-      ...loc(),
-    });
-    return collectLatestAnnotations(rows as Record<string, unknown>[]);
-  } catch (e) {
-    console.warn("[evalReviewStore] list fallback:", e instanceof Error ? e.message : e);
-    return [];
-  }
+  const rows = await servingQuery<Record<string, unknown>>(
+    `
+    select annotation_id, conversation_id, payload_json, updated_at, updated_by, deleted
+    from serving_human_reviews
+    where conversation_id = $1
+    order by updated_at desc
+    `,
+    [conversationId],
+  );
+  return collectLatestAnnotations(rows.map(asReviewRaw));
 }
 
 /**
@@ -175,34 +146,24 @@ export async function listEvalReviewsByConversationIds(
   const ids = [...new Set(conversationIds.filter(Boolean))];
   const out = new Map<string, EvalReviewAnnotation[]>();
   if (!ids.length) return out;
-  await ensureEvalReviewTable();
-  const sql = growthBq.resultsSql(TABLE);
-  const v2 = await isEvalItemKeyV2();
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${sql}
-        where ${phoneIdInSql(v2, "ids")}
-        order by updated_at desc
-      `,
-      params: { ids, ...phoneScopeParams(v2) },
-      ...loc(),
-    });
-    const byConv = new Map<string, Record<string, unknown>[]>();
-    for (const raw of rows as Record<string, unknown>[]) {
-      const cid = String(raw.conversation_id ?? raw.source_id ?? "");
-      if (!cid) continue;
-      const list = byConv.get(cid) ?? [];
-      list.push(raw);
-      byConv.set(cid, list);
-    }
-    for (const [cid, convRows] of byConv) {
-      out.set(cid, collectLatestAnnotations(convRows));
-    }
-  } catch (e) {
-    console.warn("[evalReviewStore] listByIds fallback:", e instanceof Error ? e.message : e);
+  const rows = await servingQuery<Record<string, unknown>>(
+    `
+    select annotation_id, conversation_id, payload_json, updated_at, updated_by, deleted
+    from serving_human_reviews
+    where conversation_id = any($1::text[])
+    order by updated_at desc
+    `,
+    [ids],
+  );
+  const byConv = new Map<string, Record<string, unknown>[]>();
+  for (const raw of rows.map(asReviewRaw)) {
+    const cid = String(raw.conversation_id ?? "");
+    if (!cid) continue;
+    const list = byConv.get(cid) ?? [];
+    list.push(raw);
+    byConv.set(cid, list);
   }
+  for (const [cid, convRows] of byConv) out.set(cid, collectLatestAnnotations(convRows));
   return out;
 }
 
@@ -217,37 +178,16 @@ export async function listConversationIdsReviewedBy(
   const who = email.trim();
   if (!who) return [];
   const lim = Math.min(Math.max(1, Math.floor(limit)), 1000);
-  await ensureEvalReviewTable();
-  const sql = growthBq.resultsSql(TABLE);
-  const v2 = await isEvalItemKeyV2();
-  const idCol = v2 ? "source_id" : "conversation_id";
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select distinct ${idCol} as conversation_id
-        from (
-          select ${idCol}, updated_by, deleted,
-            row_number() over (partition by annotation_id order by updated_at desc) as rn
-          from ${sql}
-          where ${idCol} in (
-            select distinct ${idCol} from ${sql} where updated_by = @email
-          )
-        )
-        where rn = 1
-          and ifnull(deleted, false) = false
-          and updated_by = @email
-        limit @lim
-      `,
-      params: { email: who, lim },
-      ...loc(),
-    });
-    return (rows as Record<string, unknown>[])
-      .map((r) => String(r.conversation_id ?? "").trim())
-      .filter(Boolean);
-  } catch (e) {
-    console.warn("[evalReviewStore] listByReviewer fallback:", e instanceof Error ? e.message : e);
-    return [];
-  }
+  const rows = await servingQuery<{ conversation_id: string }>(
+    `
+    select distinct conversation_id
+    from serving_human_reviews
+    where not deleted and lower(updated_by) = lower($1)
+    limit $2
+    `,
+    [who, lim],
+  );
+  return rows.map((r) => r.conversation_id).filter(Boolean);
 }
 
 /**
@@ -255,27 +195,19 @@ export async function listConversationIdsReviewedBy(
  * annotation_id 기준 최신 비삭제만, updated_at desc.
  */
 export async function listRecentEvalReviews(limit = 2000): Promise<EvalReviewAnnotation[]> {
-  await ensureEvalReviewTable();
-  const sql = growthBq.resultsSql(TABLE);
   const lim = Math.min(Math.max(1, Math.floor(limit)), 5000);
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${sql}
-        order by updated_at desc
-        limit @lim
-      `,
-      params: { lim: lim * 3 },
-      ...loc(),
-    });
-    const all = collectLatestAnnotations(rows as Record<string, unknown>[]);
-    all.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
-    return all.slice(0, lim);
-  } catch (e) {
-    console.warn("[evalReviewStore] listRecent fallback:", e instanceof Error ? e.message : e);
-    return [];
-  }
+  const rows = await servingQuery<Record<string, unknown>>(
+    `
+    select annotation_id, conversation_id, payload_json, updated_at, updated_by, deleted
+    from serving_human_reviews
+    order by updated_at desc
+    limit $1
+    `,
+    [lim],
+  );
+  const all = collectLatestAnnotations(rows.map(asReviewRaw));
+  all.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  return all.slice(0, lim);
 }
 
 export function conversationReviewAnnotationId(conversationId: string, criterionId: number): string {
@@ -326,41 +258,7 @@ export async function saveEvalReview(
     updatedAt,
     updatedBy: input.updatedBy,
   };
-  const insertRow = (await isEvalItemKeyV2())
-    ? {
-        annotation_id: annotationId,
-        channel: "phone",
-        source_system: PHONE_SOURCE_SYSTEM,
-        source_id: row.conversationId,
-        criterion_id: row.criterionId,
-        scope,
-        judgment,
-        review_needed: reviewNeeded,
-        best_category: bestCategory,
-        source: row.source,
-        at_sec: row.atSec,
-        segment_index: row.segmentIndex,
-        turn_id: null as string | null,
-        comment: row.comment,
-        quote: row.quote,
-        ai_criterion_id: row.aiCriterionId,
-        ai_violated: row.aiViolated,
-        ai_quote: row.aiQuote,
-        ai_reason: row.aiReason,
-        payload_json: JSON.stringify(row),
-        updated_at: updatedAt,
-        updated_by: row.updatedBy,
-        deleted: false,
-      }
-    : {
-        annotation_id: annotationId,
-        conversation_id: row.conversationId,
-        payload_json: JSON.stringify(row),
-        updated_at: updatedAt,
-        updated_by: row.updatedBy,
-        deleted: false,
-      };
-  await reviewTable().insert([insertRow], { skipInvalidRows: true, ignoreUnknownValues: true });
+  await upsertReview(row, false);
 
   // 동일 평가항목 일괄(conversation) ↔ 발화별(occurrence) 전환 시 서로 덮어쓰지 않도록 정리
   if (criterionId > 0 && judgment !== "best") {
@@ -401,26 +299,28 @@ export async function deleteEvalReview(input: {
   conversationId: string;
   updatedBy: string;
 }): Promise<void> {
-  await ensureEvalReviewTable();
   const updatedAt = new Date().toISOString();
-  const insertRow = (await isEvalItemKeyV2())
-    ? {
-        annotation_id: input.annotationId,
-        channel: "phone",
-        source_system: PHONE_SOURCE_SYSTEM,
-        source_id: input.conversationId,
-        payload_json: JSON.stringify({ annotationId: input.annotationId, deleted: true }),
-        updated_at: updatedAt,
-        updated_by: input.updatedBy,
-        deleted: true,
-      }
-    : {
-        annotation_id: input.annotationId,
-        conversation_id: input.conversationId,
-        payload_json: JSON.stringify({ annotationId: input.annotationId, deleted: true }),
-        updated_at: updatedAt,
-        updated_by: input.updatedBy,
-        deleted: true,
-      };
-  await reviewTable().insert([insertRow], { skipInvalidRows: true, ignoreUnknownValues: true });
+  await upsertReview(
+    {
+      annotationId: input.annotationId,
+      conversationId: input.conversationId,
+      source: "human",
+      atSec: 0,
+      segmentIndex: null,
+      criterionId: 0,
+      judgment: "hold",
+      reviewNeeded: null,
+      bestCategory: null,
+      scope: "conversation",
+      comment: "",
+      aiCriterionId: null,
+      aiViolated: null,
+      aiQuote: null,
+      aiReason: null,
+      quote: null,
+      updatedAt,
+      updatedBy: input.updatedBy,
+    },
+    true,
+  );
 }

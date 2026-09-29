@@ -46,7 +46,7 @@ CS 통화를 **점수 매김이 아니라 "뜯어보는" 분석 도구**로 운�
 
 **흐름 (end-to-end)**
 
-1. **샘플 선택** — BigQuery 실물 테이블 `data-proj-470202.ds_growth_culture.qradar_evaluation_cases`(리전 US)에서 통화 목록 조회. 팀·카테고리·상담사·기간·통화시간 등 **검색/필터**(URL로 상태 지속), 통화당 dedup, 통화 길이 표시.
+1. **샘플 선택** — BigQuery `data-proj-470202.ds_qradar_{dev|prod}.qradar_evaluation_cases_flat`(리전 US, `BQ_TARGET`)에서 통화 목록 조회. 팀·카테고리·상담사·기간·통화시간 등 **검색/필터**(URL로 상태 지속), 통화당 dedup, 통화 길이 표시. 이 풀은 당일 콜까지 보이도록 `phone_inquiries_verbose`를 직조회하는 **뷰**(`scripts/bq/qradar_evaluation_cases_flat_view.sql`)라 목록 조회가 수 초 걸린다. 신선도를 포기할 수 있으면 같은 스키마의 일 1회 MERGE 테이블(`..._flat_table.sql`)로 교체한다.
 2. **녹취 확보 (Genesys)** — 선택한 `conversation_id`로 서버가 Genesys OAuth(client_credentials) → **단건(직접) recording API**로 미디어 URL 확보(수 초). 아카이브 녹취는 배치 API 폴백(복원 필요 시 안내).
 3. **정확 전사 (Google STT)** — 스테레오 WAV를 GCS 임시 업로드 후 `longRunningRecognize`로 **워드 타임스탬프 실측**. **듀얼채널 화자분리**(Genesys 좌우 채널 = 상담원/고객 물리 분리)로 화자 구분. 전사 끝나면 임시 파일·GCS 객체 삭제.
 4. **무발화 공백** — STT 발화 구간의 사이를 공백으로 계산(보류음 구간도 포착). STT 실패 시 ffmpeg `silencedetect` 폴백.
@@ -225,7 +225,7 @@ docs/helpdesk-x_서비스구조.md · docs/qms/
 | `GROWTH_CULTURE_PROJECT_ID`                     | BQ 프로젝트(콜 분석·앱 로그 통합)                    | `data-proj-470202`                                       |
 | `GROWTH_CULTURE_LOCATION`                       | 해당 데이터셋 리전                               | `US`                                                     |
 | `BQ_TARGET`                                     | `dev`→`ds_qradar_dev`, `prod`→`ds_qradar_prod` (테이블명 동일·`qradar_` 접두) | `prod` |
-| `EVAL_SHARED_DATASET` / `EVAL_CASES_TABLE`      | 공유 입력 데이터셋 / 케이스 테이블                      | `ds_growth_culture` / `….qradar_evaluation_cases`        |
+| `EVAL_SHARED_DATASET` / `EVAL_CASES_TABLE`      | 공유 입력 데이터셋 / 케이스 테이블                      | `ds_growth_culture` / `ds_qradar_{dev|prod}.qradar_evaluation_cases_flat` |
 | `EVAL_RESULTS_TABLE` / `EVAL_RESULTS_TABLE_PAY` | 결과 테이블명. **통합 테이블** 사용(`org` 구분). PAY env는 deprecated 별칭 | `qradar_evaluation_results` |
 | `EVAL_CRITERIA_VIEW`                            | CS 체크리스트 기준 뷰 (`dataset.view`). 비우면 하드코딩 | `ds_growth_culture.vw_evaluation_criterions`             |
 | `STT_LANGUAGE` / `STT_MODEL`                    | Speech-to-Text 언어/모델                     | `ko-KR` / `latest_long`                                  |
@@ -233,7 +233,7 @@ docs/helpdesk-x_서비스구조.md · docs/qms/
 | `CALL_PROMPT_VERSION`                           | 콜 분석 프롬프트 버전(결과에 기록)                     | `v1`                                                     |
 
 
-> BigQuery 프로젝트·테이블·뷰는 **`lib/bqRefs.ts`**. `BQ_TARGET`로 **데이터셋만** 갈라진다(`ds_qradar_dev` / `ds_qradar_prod`). 테이블명은 동일하고 `qradar_` 접두. 공유 입력(cases/criteria)은 `ds_growth_culture` 유지. 레거시 `_dev` 접미 테이블은 `npm run migrate:qradar -- --target=dev` 로 이관.
+> BigQuery 프로젝트·테이블·뷰는 **`lib/bqRefs.ts`**. `BQ_TARGET`로 **데이터셋만** 갈라진다(`ds_qradar_dev` / `ds_qradar_prod`). 테이블명은 동일하고 `qradar_` 접두. 샘플 풀(`qradar_evaluation_cases_flat`)도 이 데이터셋. 공유 입력(criteria/Train/QMS 뷰)은 `ds_growth_culture` 유지. 레거시 `_dev` 접미 테이블은 `npm run migrate:qradar -- --target=dev` 로 이관.
 > GCP 키/토큰은 레포에 없음 — `GOOGLE_SERVICE_ACCOUNT_JSON` 또는 ADC(`lib/gcpCredentials.ts`). 로그인용 Google OAuth는 `GOOGLE_CLIENT_ID`/`SECRET`(NextAuth).
 > 콜 분석 BigQuery는 서비스계정에 `data-proj-470202` 접근이 필요합니다: 샘플 조회 `dataViewer`, 결과 저장 `dataEditor`. Cloud STT는 `roles/speech.client`. GCS 버킷 자동 생성이 필요하면 `storage.buckets.create`.
 

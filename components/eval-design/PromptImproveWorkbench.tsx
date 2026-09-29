@@ -8,6 +8,7 @@ import { useCachedFetch } from "@/lib/useCachedFetch";
 import { cacheInvalidate } from "@/lib/clientCache";
 import type { CriterionPrompt, PromptFieldKey } from "@/lib/promptTypes";
 import { DEFAULT_CRITERION_REVIEW_SCOPE, DEFAULT_FIELD_KEYS } from "@/lib/promptTypes";
+import { readExposureChannels } from '@/lib/criterionChannels';
 import { formatUpdatedAtKst, buildImprovedVersionLabel } from "@/lib/criterionVersionLabel";
 import {
   PROMPT_IMPROVE_KIND_LABEL,
@@ -125,7 +126,7 @@ export default function PromptImproveWorkbench() {
   const versions = useMemo(() => {
     if (selectedCriterionId == null || !criteriaData?.prompts) return [];
     return criteriaData.prompts
-      .filter((p) => p.criterionId === selectedCriterionId)
+      .filter((p) => p.criterionId === selectedCriterionId && readExposureChannels(p.exposureChannels).includes('phone'))
       .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
   }, [criteriaData?.prompts, selectedCriterionId]);
 
@@ -294,7 +295,8 @@ export default function PromptImproveWorkbench() {
           criterionId: selectedCriterionId,
           category: group.category || selectedPrompt?.category || "",
           label: group.label || selectedPrompt?.label || String(selectedCriterionId),
-          fields: proposed,
+          fields: { ...selectedPrompt?.fields, ...proposed },
+          exposureChannels: ['phone'],
           reviewScope: selectedPrompt?.reviewScope ?? DEFAULT_CRITERION_REVIEW_SCOPE,
           versionLabel,
         }),

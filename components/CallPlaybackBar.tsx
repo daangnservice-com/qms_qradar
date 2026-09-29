@@ -74,6 +74,8 @@ type BarChromeProps = {
   hoverTip: MarkerHoverTip | null;
   setHoverTip: (v: MarkerHoverTip | null) => void;
   togglePlay: () => void;
+  rate: number;
+  onRateChange: (rate: number) => void;
   seekTo: (sec: number) => void;
   seekFromClientX: (clientX: number) => void;
   className?: string;
@@ -323,6 +325,31 @@ function SentimentSeries({
   );
 }
 
+const PLAYBACK_RATES = [0.5, 1, 1.5, 2] as const;
+
+function PlaybackRateControl({
+  rate,
+  onChange,
+}: {
+  rate: number;
+  onChange: (rate: number) => void;
+}) {
+  return (
+    <select
+      value={rate}
+      aria-label="재생 배속"
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="h-8 shrink-0 rounded-md border border-[var(--border-default)] bg-[var(--bg-canvas)] px-1.5 text-[12px] font-semibold tabular-nums text-[var(--fg-primary)]"
+    >
+      {PLAYBACK_RATES.map((r) => (
+        <option key={r} value={r}>
+          {r.toFixed(1)}배
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function PlaybackBarChrome({
   conversationId,
   pos,
@@ -335,6 +362,8 @@ function PlaybackBarChrome({
   hoverTip,
   setHoverTip,
   togglePlay,
+  rate,
+  onRateChange,
   seekTo,
   seekFromClientX,
   className = "",
@@ -379,6 +408,7 @@ function PlaybackBarChrome({
               스테레오 파형 · 뱃지 기준선 · 클릭하여 이동 · Space 재생/일시정지
             </div>
           </div>
+          <PlaybackRateControl rate={rate} onChange={onRateChange} />
           <button
             type="button"
             onClick={togglePlay}
@@ -405,6 +435,7 @@ function PlaybackBarChrome({
             <span className="mx-1">/</span>
             <span>{dur > 0 ? formatClock(dur) : "—"}</span>
           </div>
+          <PlaybackRateControl rate={rate} onChange={onRateChange} />
         </div>
       )}
 
@@ -576,6 +607,13 @@ export default function CallPlaybackBar({
   const [inlineHoverTip, setInlineHoverTip] = useState<MarkerHoverTip | null>(null);
   const [dockHoverTip, setDockHoverTip] = useState<MarkerHoverTip | null>(null);
   const [peaks, setPeaks] = useState<StereoPeaksState | null>(null);
+  const [rate, setRate] = useState(1);
+
+  const applyRate = useCallback((next: number) => {
+    setRate(next);
+    const a = audioRef.current;
+    if (a) a.playbackRate = next;
+  }, []);
 
   const audioSrc = `/api/call-quality/audio?conversationId=${encodeURIComponent(conversationId)}&org=${encodeURIComponent(org)}`;
 
@@ -764,6 +802,8 @@ export default function CallPlaybackBar({
     overlays,
     peaks,
     togglePlay,
+    rate,
+    onRateChange: applyRate,
     seekTo,
   };
 
@@ -775,7 +815,10 @@ export default function CallPlaybackBar({
         src={audioSrc}
         className="hidden"
         onTimeUpdate={(e) => setPos(e.currentTarget.currentTime)}
-        onLoadedMetadata={(e) => setDur(e.currentTarget.duration || dur)}
+        onLoadedMetadata={(e) => {
+          setDur(e.currentTarget.duration || dur);
+          e.currentTarget.playbackRate = rate;
+        }}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onEnded={() => setPlaying(false)}

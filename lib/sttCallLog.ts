@@ -1,12 +1,13 @@
+// STT 호출 로그. 요청 경로는 서빙 Postgres(serving_stt_call_logs)에만 쓰고 BQ로는 야간 덤프가 내보낸다.
 import { randomUUID } from "node:crypto";
 import { getBQ } from "./bigquery";
+import { servingQuery } from "./servingDb";
 import { growthBq } from "./bqRefs";
 import { addColumnsIfMissing } from "./bqSchema";
 import { estimateSttCost, STT_USD_PER_MINUTE } from "./sttPricing";
 import { USD_KRW } from "./llmPricing";
 
 const TABLE = growthBq.sttCallLogs;
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
 
 const SCHEMA = [
   { name: "call_id", type: "STRING", mode: "REQUIRED" },
@@ -60,6 +61,52 @@ export function ensureSttCallLogTable(): Promise<void> {
   return _ensured;
 }
 
+export type SttCallLogRow = {
+  callId: string;
+  ts: string;
+  purpose: string | null;
+  conversationId: string | null;
+  model: string | null;
+  language: string | null;
+  channelCount: number | null;
+  audioDurationSec: number | null;
+  billableDurationSec: number | null;
+  segmentCount: number | null;
+  latencyMs: number | null;
+  error: string | null;
+};
+
+/** 로그 행 적재. 백필이면 exported 로 표시해 다시 덤프하지 않는다. */
+export async function insertSttCallLogs(rows: SttCallLogRow[], opts?: { exported?: boolean }): Promise<void> {
+  for (const r of rows) {
+    await servingQuery(
+      `
+      insert into serving_stt_call_logs
+        (call_id, ts, purpose, conversation_id, model, language, channel_count,
+         audio_duration_sec, billable_duration_sec, segment_count, latency_ms, error, exported_at)
+      values ($1,$2::timestamptz,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,
+        case when $13::boolean then now() else null end)
+      on conflict (call_id) do nothing
+      `,
+      [
+        r.callId,
+        r.ts,
+        r.purpose,
+        r.conversationId,
+        r.model,
+        r.language,
+        r.channelCount,
+        r.audioDurationSec,
+        r.billableDurationSec,
+        r.segmentCount,
+        r.latencyMs,
+        r.error,
+        opts?.exported === true,
+      ],
+    );
+  }
+}
+
 /** STT 호출 1행. 실패해도 평가 흐름을 막지 않음. */
 export async function logSttCall(input: {
   purpose?: string | null;
@@ -73,53 +120,27 @@ export async function logSttCall(input: {
   error?: string | null;
 }): Promise<string | null> {
   try {
-    await ensureSttCallLogTable();
     const est = estimateSttCost({
       audioDurationSec: input.audioDurationSec,
       channelCount: input.channelCount,
     });
     const callId = randomUUID();
-    const ts = new Date().toISOString();
-    const sql = growthBq.resultsSql(TABLE);
-    await getBQ().query({
-      query: `
-        insert into ${sql}
-          (call_id, ts, purpose, conversation_id, model, language, channel_count,
-           audio_duration_sec, billable_duration_sec, segment_count, latency_ms, error)
-        values
-          (@call_id, timestamp(@ts), @purpose, @conversation_id, @model, @language, @channel_count,
-           @audio_duration_sec, @billable_duration_sec, @segment_count, @latency_ms, @error)
-      `,
-      params: {
-        call_id: callId,
-        ts,
+    await insertSttCallLogs([
+      {
+        callId,
+        ts: new Date().toISOString(),
         purpose: input.purpose ?? null,
-        conversation_id: input.conversationId ?? null,
+        conversationId: input.conversationId ?? null,
         model: input.model,
         language: input.language,
-        channel_count: input.channelCount,
-        audio_duration_sec: input.audioDurationSec,
-        billable_duration_sec: est.billableSec,
-        segment_count: input.segmentCount,
-        latency_ms: input.latencyMs ?? null,
+        channelCount: input.channelCount,
+        audioDurationSec: input.audioDurationSec,
+        billableDurationSec: est.billableSec,
+        segmentCount: input.segmentCount,
+        latencyMs: input.latencyMs == null ? null : Math.round(input.latencyMs),
         error: input.error ?? null,
       },
-      types: {
-        call_id: "STRING",
-        ts: "STRING",
-        purpose: "STRING",
-        conversation_id: "STRING",
-        model: "STRING",
-        language: "STRING",
-        channel_count: "INT64",
-        audio_duration_sec: "FLOAT64",
-        billable_duration_sec: "FLOAT64",
-        segment_count: "INT64",
-        latency_ms: "INT64",
-        error: "STRING",
-      },
-      ...loc(),
-    });
+    ]);
     return callId;
   } catch (e) {
     console.warn("[sttCallLog] insert failed:", e instanceof Error ? e.message : e);
@@ -147,46 +168,35 @@ export type SttUsageStats = {
 };
 
 export async function getSttUsageStats(days = 30): Promise<SttUsageStats> {
-  await ensureSttCallLogTable();
-  const sql = growthBq.resultsSql(TABLE);
   const safeDays = Math.min(Math.max(1, days), 90);
+  const since = `ts >= now() - make_interval(days => $1)`;
+  const errors = `count(*) filter (where error is not null and error <> '')`;
 
-  const [summaryRows, dailyRows] = await Promise.all([
-    getBQ().query({
-      query: `
-        select
-          count(*) as total_calls,
-          countif(error is not null and error != '') as error_calls,
-          ifnull(sum(audio_duration_sec), 0) as audio_sec,
-          ifnull(sum(billable_duration_sec), 0) as billable_sec,
-          ifnull(avg(latency_ms), 0) as avg_latency
-        from ${sql}
-        where ts >= timestamp_sub(current_timestamp(), interval @days day)
+  const [summary, dailyRows] = await Promise.all([
+    servingQuery(
+      `
+      select count(*) as total_calls, ${errors} as error_calls,
+        coalesce(sum(audio_duration_sec), 0) as audio_sec,
+        coalesce(sum(billable_duration_sec), 0) as billable_sec,
+        coalesce(avg(latency_ms), 0) as avg_latency
+      from serving_stt_call_logs where ${since}
       `,
-      params: { days: safeDays },
-      types: { days: "INT64" },
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        select
-          format_date('%Y-%m-%d', date(ts, 'Asia/Seoul')) as d,
-          count(*) as calls,
-          ifnull(sum(audio_duration_sec), 0) as audio_sec,
-          ifnull(sum(billable_duration_sec), 0) as billable_sec,
-          countif(error is not null and error != '') as errors
-        from ${sql}
-        where ts >= timestamp_sub(current_timestamp(), interval @days day)
-        group by d
-        order by d
+      [safeDays],
+    ),
+    servingQuery(
+      `
+      select to_char(ts at time zone 'Asia/Seoul', 'YYYY-MM-DD') as d, count(*) as calls,
+        coalesce(sum(audio_duration_sec), 0) as audio_sec,
+        coalesce(sum(billable_duration_sec), 0) as billable_sec,
+        ${errors} as errors
+      from serving_stt_call_logs where ${since}
+      group by d order by d
       `,
-      params: { days: safeDays },
-      types: { days: "INT64" },
-      ...loc(),
-    }),
+      [safeDays],
+    ),
   ]);
 
-  const s = (summaryRows[0] as Record<string, unknown>[])[0] ?? {};
+  const s = (summary as Record<string, unknown>[])[0] ?? {};
   const num = (v: unknown) => Number(v ?? 0);
   const billableSec = num(s.billable_sec);
   const billableMin = billableSec / 60;
@@ -206,7 +216,7 @@ export async function getSttUsageStats(days = 30): Promise<SttUsageStats> {
       usdPerMin: STT_USD_PER_MINUTE,
       note: `STT V1 Standard · $${STT_USD_PER_MINUTE}/min (data logging on). logging 미사용 시 $${0.024}/min · 채널×초 · 월 60분 무료 미반영`,
     },
-    daily: (dailyRows[0] as Record<string, unknown>[]).map((r) => {
+    daily: (dailyRows as Record<string, unknown>[]).map((r) => {
       const bSec = num(r.billable_sec);
       return {
         date: String(r.d),

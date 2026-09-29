@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { DSAT_FLAG_KEY, resolveDsatRule, type HighRiskFlagRule } from "./highRiskFlags";
-import { isDsatRate } from "./csat";
+import { buildDsatToolUrl, DSAT_TOOL_MAX_RATE, isDsatRate } from "./csat";
 
 function rule(over: Partial<HighRiskFlagRule>): HighRiskFlagRule {
   return {
@@ -8,6 +8,7 @@ function rule(over: Partial<HighRiskFlagRule>): HighRiskFlagRule {
     key: "dsat",
     label: "DSAT",
     enabled: true,
+    channel: "phone",
     kind: "csat_dsat",
     params: { maxRate: 2 },
     sortOrder: 4,
@@ -59,5 +60,28 @@ describe("isDsatRate", () => {
     expect(isDsatRate(null, 2)).toBe(false);
     expect(isDsatRate(undefined, 2)).toBe(false);
     expect(isDsatRate(Number.NaN, 2)).toBe(false);
+  });
+});
+
+describe("buildDsatToolUrl", () => {
+  it("csatId·adminUserId로 DSAT 도구 딥링크를 만든다", () => {
+    expect(buildDsatToolUrl("552840", "615360097")).toBe(
+      "http://172.17.3.56.nip.io:3000/?page=dsat&csatId=552840&adminUserId=615360097",
+    );
+  });
+
+  it("둘 중 하나라도 비면 링크를 만들지 않는다", () => {
+    expect(buildDsatToolUrl("", "615360097")).toBeNull();
+    expect(buildDsatToolUrl("552840", "")).toBeNull();
+    expect(buildDsatToolUrl("  ", "  ")).toBeNull();
+  });
+});
+
+describe("DSAT 도구 점수 구간", () => {
+  it("1~3점은 도구 대상, 4~5점은 아니다", () => {
+    expect(isDsatRate(1, DSAT_TOOL_MAX_RATE)).toBe(true);
+    expect(isDsatRate(3, DSAT_TOOL_MAX_RATE)).toBe(true);
+    expect(isDsatRate(4, DSAT_TOOL_MAX_RATE)).toBe(false);
+    expect(isDsatRate(5, DSAT_TOOL_MAX_RATE)).toBe(false);
   });
 });

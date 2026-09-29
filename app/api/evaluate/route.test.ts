@@ -46,8 +46,8 @@ describe("POST /api/evaluate", () => {
     expect((await POST(jsonReq({ conversationId: "c1" }))).status).toBe(401);
   });
 
-  it("403 for a non-karla account", async () => {
-    (getServerSession as any).mockResolvedValue({ user: { email: "someone@daangnservice.com" } });
+  it("403 for an account outside the domain", async () => {
+    (getServerSession as any).mockResolvedValue({ user: { email: "someone@gmail.com" } });
     expect((await POST(jsonReq({ conversationId: "c1" }))).status).toBe(403);
   });
 

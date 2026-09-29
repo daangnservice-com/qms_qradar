@@ -3,13 +3,14 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { getEffectiveEmail } from "@/lib/sudoSession";
 import { getScheduleBoard } from "@/lib/evalOpsScheduleStore";
+import { ensureSessionCanAccessEvalOpsNav } from "@/lib/sessionAccessServer";
 
 export const runtime = "nodejs";
 
 /** 월별 스케줄 보드 (items + personal). 비어 있으면 확정 배분에서 1회 시드. */
 export async function GET(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
-  if (!session?.user?.email) {
+  if (!session?.user?.email || !(await ensureSessionCanAccessEvalOpsNav(session))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

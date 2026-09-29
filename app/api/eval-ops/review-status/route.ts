@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessEvalOpsNav } from "@/lib/sessionAccessServer";
 import {
   buildReviewStatusReport,
   currentYearMonthKst,
@@ -14,7 +14,7 @@ export const maxDuration = 60;
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!await ensureSessionCanAccessCallQuality(session)) {
+  if (!await ensureSessionCanAccessEvalOpsNav(session)) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   try {

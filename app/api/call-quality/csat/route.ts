@@ -1,9 +1,8 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { orgFromParam } from "@/lib/callQualityOrg";
-import { ensureSessionCanAccessCallQualityPlayback } from "@/lib/sessionAccessServer";
-import { getCsatByPhoneInquiryId } from "@/lib/csat";
-import { resolvePhoneInquiryIdByConversationId } from "@/lib/evaluationSamples";
+import { CALL_EVAL_ORG } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessEvalProgress } from "@/lib/sessionAccessServer";
+import { getServingCsat, servingPhoneInquiryId } from "@/lib/callServingStore";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,9 +15,9 @@ export async function GET(req: Request): Promise<Response> {
   if (!session?.user?.email) return new Response("Unauthorized", { status: 401 });
 
   const url = new URL(req.url);
-  const org = orgFromParam(url.searchParams.get("org"));
+  const org = CALL_EVAL_ORG;
   // 청취 전용 계정도 녹취를 듣는 화면에서 CSAT을 본다(재생 권한과 같은 기준).
-  if (!(await ensureSessionCanAccessCallQualityPlayback(org, session))) {
+  if (!(await ensureSessionCanAccessEvalProgress(session))) {
     return new Response("Forbidden", { status: 403 });
   }
 
@@ -33,9 +32,9 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   try {
-    const phoneInquiryId = given || (await resolvePhoneInquiryIdByConversationId(conversationId));
+    const phoneInquiryId = given || (await servingPhoneInquiryId(conversationId)) || "";
     if (!phoneInquiryId) return Response.json({ csat: null, phoneInquiryId: null });
-    const csat = await getCsatByPhoneInquiryId(phoneInquiryId);
+    const csat = await getServingCsat(phoneInquiryId);
     return Response.json({ csat, phoneInquiryId });
   } catch (err) {
     console.error("[GET /api/call-quality/csat]", err);

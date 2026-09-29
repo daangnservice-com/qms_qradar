@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   formatFetchError,
+  localSttJobFormFields,
+  localSttJobOptions,
+  localSttLegacyJobOptions,
   parseLocalSttHealth,
   parseLocalSttJobView,
   parseLocalSttResult,
   speakerToLabel,
   speakerToTag,
 } from "./localSttClient";
-import { initialLastRunDateKst } from "./sttBatchStore";
+import { initialLastRunDateKst } from "./sttBatchKst";
 
 describe("formatFetchError", () => {
   it("unwraps Node fetch failed cause", () => {
@@ -68,10 +71,35 @@ describe("parseLocalSttResult", () => {
     });
     expect(parsed.durationSec).toBe(14.572);
     expect(parsed.transcript).toEqual([
-      { atSec: 0, speaker: "상담원", text: "안녕하세요 고객님" },
-      { atSec: 7.02, speaker: "고객", text: "네 안녕하세요" },
+      { atSec: 0, wordAtSec: 0, speaker: "상담원", text: "안녕하세요 고객님" },
+      { atSec: 7.02, wordAtSec: 7.02, speaker: "고객", text: "네 안녕하세요" },
     ]);
     expect(parsed.segments.map((s) => s.speakerTag)).toEqual([1, 2]);
+  });
+
+  it("seeks a long turn to its first word and drops a 네 loop", () => {
+    const parsed = parseLocalSttResult({
+      audio: { duration_sec: 40 },
+      segments: [
+        {
+          channel: 1,
+          speaker: "agent",
+          start: 14,
+          end: 40,
+          text: "어떤 걸 설정하신다고요",
+          avg_logprob: -0.4,
+          words: [
+            { start: 32.1, end: 32.4, word: "어떤" },
+            { start: 32.4, end: 32.8, word: "걸" },
+          ],
+        },
+        { channel: 1, speaker: "agent", start: 41, end: 42, text: "네네네네네네" },
+      ],
+    });
+    expect(parsed.transcript).toEqual([
+      { atSec: 32.1, wordAtSec: 32.1, speaker: "상담원", text: "어떤걸" },
+    ]);
+    expect(parsed.details[0]).toMatchObject({ atSec: 32.1, endSec: 32.8, avgLogprob: -0.4 });
   });
 });
 
@@ -92,5 +120,45 @@ describe("initialLastRunDateKst", () => {
   it("skips today when created after the due time", () => {
     const after = new Date("2026-08-31T10:00:00+09:00");
     expect(initialLastRunDateKst(2, 0, after)).toBe("2026-08-31");
+  });
+});
+
+describe("localSttJobOptions", () => {
+  it("does not send a sentence initial_prompt that Whisper can echo", () => {
+    expect(localSttJobOptions()).toEqual({
+      language: "ko",
+      channel_names: ["customer", "agent"],
+      word_timestamps: true,
+      hotwords: "당근 당근페이 비즈니스 비즈프로필",
+      hallucination_silence_threshold: 2,
+    });
+    expect(localSttJobOptions()).not.toHaveProperty("initial_prompt");
+  });
+
+  it("keeps word timestamps when an old server rejects hotwords", () => {
+    expect(localSttLegacyJobOptions()).toEqual({
+      language: "ko",
+      channel_names: ["customer", "agent"],
+      word_timestamps: true,
+    });
+    expect(localSttLegacyJobOptions()).not.toHaveProperty("hotwords");
+    expect(localSttLegacyJobOptions()).not.toHaveProperty("initial_prompt");
+  });
+});
+
+describe("localSttJobFormFields", () => {
+  it("keeps conversation id as client_ref and omits force for night batch", () => {
+    expect(localSttJobFormFields({ conversationId: "c1", priority: 0 })).toEqual({
+      client_ref: "c1",
+      priority: "0",
+    });
+  });
+
+  it("sends force=true with the same client_ref for reprocess", () => {
+    expect(localSttJobFormFields({ conversationId: "c1", priority: 100, force: true })).toEqual({
+      client_ref: "c1",
+      priority: "100",
+      force: "true",
+    });
   });
 });

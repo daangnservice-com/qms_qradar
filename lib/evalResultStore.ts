@@ -3,16 +3,7 @@ import { getBQ } from "./bigquery";
 import { growthBq } from "./bqRefs";
 import { addColumnsIfMissing } from "./bqSchema";
 import type { CallQualityOrg } from "./callQualityOrg";
-import {
-  isEvalItemKeyV2,
-  itemIdCol,
-  mapStoredPurpose,
-  phoneIdEqSql,
-  phoneIdInSql,
-  phoneItemRef,
-  phoneScopeParams,
-  phoneScopeSql,
-} from "./evalItemKey";
+import { isEvalItemKeyV2, mapStoredPurpose, phoneItemRef } from "./evalItemKey";
 import { PHONE_SOURCE_SYSTEM, type EvaluationChannel, type EvaluationItemRef } from "./evaluationChannel";
 import { EVAL_RESULTS_V2_SCHEMA } from "./evalSchemaV2";
 import { listEvalReviews, listEvalReviewsByConversationIds } from "./evalReviewStore";
@@ -37,13 +28,22 @@ import {
 import { DEFAULT_RESULT_PARSE_CONFIG, type ResultParseConfig } from "./promptTypes";
 import type { CallEvalVersionSummary } from "./callArtifactVersions";
 import { parseSttSource, type ChecklistResult, type EvaluationResult, type SttSource, type TranscriptSegment } from "./types";
-import { flattenOverallSummary } from "./outputSchema";
+import { servingQuery } from "./servingDb";
+import {
+  findLatestServingEval,
+  findServingEvalByAnalysisId,
+  insertServingEvalResult,
+  listServingAnalyzedIds,
+  listServingEvalSummaries,
+  listServingLatestRows,
+  listServingPromptVersionCounts,
+  listServingRecentAnalyzedIds,
+  listServingTranscriptRows,
+} from "./servingEvalStore";
+import { patchCallApp } from "./callServingStore";
 import { parseTranscriptJson } from "./sttReuse";
 import { getPromptConfigByVersionId } from "./promptStore";
-import {
-  loadEvaluationCriterionResults,
-  saveEvaluationCriterionResults,
-} from "./evaluationDimensionStore";
+import { loadEvaluationCriterionResults } from "./evaluationDimensionStore";
 
 export {
   checklistFromEvalPayload,
@@ -89,8 +89,6 @@ export type EvalResultRow = {
 };
 
 const TABLE = growthBq.resultsTable;
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
-const sql = () => growthBq.resultsSql(TABLE);
 const tableRef = () =>
   getBQ().dataset(growthBq.dataset, { projectId: growthBq.projectId }).table(TABLE);
 
@@ -185,28 +183,6 @@ export function ensureEvalResultsTable(): Promise<void> {
   return _ensured;
 }
 
-async function phoneQuery() {
-  const v2 = await isEvalItemKeyV2();
-  return {
-    v2,
-    id: itemIdCol(v2),
-    eq: (param = "cid") => phoneIdEqSql(v2, param),
-    inn: (param = "ids") => phoneIdInSql(v2, param),
-    params: phoneScopeParams(v2),
-    partition: v2 ? "channel, source_system, source_id" : "conversation_id",
-    transcript: v2 ? "turns_json" : "transcript_json",
-    transcriptSelect: v2
-      ? `analysis_id, analyzed_at,
-         safe_cast(json_value(channel_attrs_json, '$.durationSec') as float64) as duration_sec,
-         turns_json as transcript_json, result_json,
-         json_value(channel_attrs_json, '$.sttSource') as stt_source`
-      : `analysis_id, analyzed_at, duration_sec, transcript_json, result_json, stt_source`,
-    nonEmptyTranscript: v2
-      ? `turns_json is not null and turns_json != '' and turns_json != '[]'`
-      : `transcript_json is not null and transcript_json != '' and transcript_json != '[]'`,
-  };
-}
-
 function tsValue(updated: unknown): string {
   if (updated && typeof updated === "object" && "value" in (updated as object)) {
     return String((updated as { value: string }).value);
@@ -277,7 +253,9 @@ async function parseResult(row: EvalResultRow): Promise<EvaluationResult | null>
     const result = JSON.parse(row.resultJson) as EvaluationResult;
     result.analysisId = row.analysisId;
     result.conversationId = row.conversationId;
-    const normalizedChecklist = await loadEvaluationCriterionResults(row.analysisId);
+    const normalizedChecklist = result.evaluation?.csChecklist?.length
+      ? null
+      : await loadEvaluationCriterionResults(row.analysisId);
     if (normalizedChecklist?.length) {
       result.evaluation.csChecklist = normalizedChecklist;
     }
@@ -445,10 +423,6 @@ export type SaveEvalRunInput = {
 
 /** v2 통합 결과 테이블에 실행 1건 append. */
 export async function saveEvalRun(input: SaveEvalRunInput): Promise<EvalResultRow> {
-  await ensureEvalResultsTable();
-  if (!(await isEvalItemKeyV2())) {
-    throw new Error("saveEvalRun requires the v2 evaluation_results schema");
-  }
   const checklist = (input.result.evaluation.csChecklist ?? []) as ChecklistResult[];
   const parseConfig = input.parseConfig ?? DEFAULT_RESULT_PARSE_CONFIG;
   const aiLabel = input.result.evaluation.error ? "" : deriveEvalLabel({ csChecklist: checklist }, parseConfig);
@@ -457,30 +431,29 @@ export async function saveEvalRun(input: SaveEvalRunInput): Promise<EvalResultRo
   const e = input.result.evaluation;
   const r = input.result;
   const persistedResult = { ...r, channel: input.ref.channel, sourceSystem: input.ref.sourceSystem, sourceId: input.ref.sourceId };
-  delete persistedResult.promptConfig;
   const turnsJson = input.turnsJson
     ?? JSON.stringify(e.conversation?.length ? e.conversation : (e.transcript ?? []));
   const orgRaw = input.org?.trim() || null;
   const org: CallQualityOrg | null = orgRaw === "pay" || orgRaw === "growth" ? orgRaw : null;
+  const sttSource = parseSttSource(r.sttSource) ?? parseSttSource(input.channelAttrs?.sttSource);
+  const flagKeys = (e.highRiskFlags ?? []).map((f) => f.key).filter(Boolean);
+  let transcript: TranscriptSegment[] = [];
+  try {
+    transcript = JSON.parse(turnsJson) as TranscriptSegment[];
+  } catch {
+    transcript = [];
+  }
+  const hasStt = transcript.some((t) => (t.text ?? "").trim().length > 0);
 
-  await getBQ().query({
-    query: `
-      insert into ${sql()} (
-        analysis_id, analyzed_at, channel, source_system, source_id, org, purpose,
-        analyzed_by, model, prompt_version_id, prompt_version, ai_label,
-        turns_json, input_snapshot_json, channel_attrs_json, result_json, llm_call_id, error
-      ) values (
-        @analysis_id, timestamp(@analyzed_at), @channel, @source_system, @source_id, @org, @purpose,
-        @analyzed_by, @model, @prompt_version_id, @prompt_version, @ai_label,
-        @turns_json, @input_snapshot_json, @channel_attrs_json, @result_json, @llm_call_id, @error
-      )
-    `,
-    params: {
+  await insertServingEvalResult({
+    record: {
       analysis_id: analysisId,
       analyzed_at: analyzedAt,
+      conversation_id: input.ref.sourceId,
       channel: input.ref.channel,
       source_system: input.ref.sourceSystem,
       source_id: input.ref.sourceId,
+      phone_inquiry_id: input.channelAttrs?.phoneInquiryId ?? null,
       org,
       purpose: mapStoredPurpose(input.purpose),
       analyzed_by: input.analyzedBy ?? null,
@@ -489,42 +462,19 @@ export async function saveEvalRun(input: SaveEvalRunInput): Promise<EvalResultRo
       prompt_version: input.promptVersion ?? null,
       ai_label: aiLabel,
       turns_json: turnsJson,
+      transcript_json: turnsJson,
       input_snapshot_json: JSON.stringify(input.inputSnapshot ?? {}),
       channel_attrs_json: JSON.stringify(input.channelAttrs ?? {}),
       result_json: JSON.stringify(persistedResult),
       llm_call_id: input.llmCallId ?? null,
       error: e.error ?? null,
+      stt_source: sttSource,
+      duration_sec: input.channelAttrs?.durationSec ?? r.durationSec ?? null,
     },
-    types: {
-      analysis_id: "STRING",
-      analyzed_at: "STRING",
-      channel: "STRING",
-      source_system: "STRING",
-      source_id: "STRING",
-      org: "STRING",
-      purpose: "STRING",
-      analyzed_by: "STRING",
-      model: "STRING",
-      prompt_version_id: "STRING",
-      prompt_version: "STRING",
-      ai_label: "STRING",
-      turns_json: "STRING",
-      input_snapshot_json: "STRING",
-      channel_attrs_json: "STRING",
-      result_json: "STRING",
-      llm_call_id: "STRING",
-      error: "STRING",
-    },
-    ...loc(),
+    flagKeys,
+    hasStt,
+    phoneInquiryId: input.channelAttrs?.phoneInquiryId != null ? String(input.channelAttrs.phoneInquiryId) : null,
   });
-  await saveEvaluationCriterionResults({
-    analysisId,
-    evalSetId: input.promptVersionId,
-    checklist,
-    createdAt: analyzedAt,
-  }).catch((err) =>
-    console.warn("[evalResultStore] normalized criterion results sync:", err instanceof Error ? err.message : err),
-  );
 
   return {
     analysisId,
@@ -558,188 +508,34 @@ export async function saveEvalRun(input: SaveEvalRunInput): Promise<EvalResultRo
 
 /** AI 평가 결과 1건 append. analysis_id 반환. */
 export async function saveEvalResult(input: SaveEvalResultInput): Promise<EvalResultRow> {
-  await ensureEvalResultsTable();
-  if (await isEvalItemKeyV2()) {
-    const e = input.result.evaluation;
-    return saveEvalRun({
-      purpose: input.purpose,
-      org: input.org,
-      ref: phoneItemRef(input.conversationId),
-      analyzedBy: input.analyzedBy,
-      result: input.result,
-      promptVersionId: input.promptVersionId,
-      promptVersion: input.promptVersion,
-      model: input.model,
-      llmCallId: input.llmCallId,
-      parseConfig: input.parseConfig,
-      turnsJson: JSON.stringify(e.transcript ?? []),
-      channelAttrs: {
-        phoneInquiryId: input.phoneInquiryId ?? null,
-        durationSec: input.result.durationSec,
-        silenceCount: input.result.silenceSummary.count,
-        silenceTotalSec: input.result.silenceSummary.totalSec,
-        silenceLongestSec: input.result.silenceSummary.longestSec,
-        silenceRatio: input.result.silenceSummary.silenceRatio,
-        minSilenceSec: input.result.threshold.minSilenceSec,
-        noiseDb: input.result.threshold.noiseDb,
-        audioKept: input.audioKept ?? null,
-        audioPath: input.audioPath ?? null,
-        sttSource: parseSttSource(input.result.sttSource),
-        highRiskFlags: e.highRiskFlags ?? [],
-      },
-    });
-  }
-  const checklist = (input.result.evaluation.csChecklist ?? []) as ChecklistResult[];
-  const parseConfig = input.parseConfig ?? DEFAULT_RESULT_PARSE_CONFIG;
-  const aiLabel = deriveEvalLabel({ csChecklist: checklist }, parseConfig);
-  const human = normalizeHumanResult(input.humanResult ?? "");
-  const match = human ? labelsMatch(human, aiLabel) : null;
-  const analysisId = randomUUID();
-  const analyzedAt = new Date().toISOString();
   const e = input.result.evaluation;
-  const r = input.result;
-  // 평가셋/기준 정의는 eval_set_criteria와 prompt dimension에서 복원한다.
-  // 기존 result_json을 읽는 legacy 결과는 promptConfig가 남아 있을 수 있다.
-  const persistedResult = { ...r };
-  delete persistedResult.promptConfig;
-
-  await getBQ().query({
-    query: `
-      insert into ${sql()} (
-        analysis_id, analyzed_at, conversation_id, phone_inquiry_id, org, purpose, analyzed_by,
-        model, prompt_version_id, prompt_version, human_result, ai_label, match, checklist_json,
-        attitude_score, attitude_comment, resolution_score, resolution_comment,
-        flow_score, flow_comment, overall_summary,
-        duration_sec, silence_count, silence_total_sec, silence_longest_sec, silence_ratio,
-        min_silence_sec, noise_db, transcript_json, result_json,
-        llm_call_id, audio_kept, audio_path, error,
-        review_completed_at, review_completed_by, high_risk_flags_json, stt_source
-      ) values (
-        @analysis_id, timestamp(@analyzed_at), @conversation_id, @phone_inquiry_id, @org, @purpose, @analyzed_by,
-        @model, @prompt_version_id, @prompt_version, @human_result, @ai_label, @match, @checklist_json,
-        @attitude_score, @attitude_comment, @resolution_score, @resolution_comment,
-        @flow_score, @flow_comment, @overall_summary,
-        @duration_sec, @silence_count, @silence_total_sec, @silence_longest_sec, @silence_ratio,
-        @min_silence_sec, @noise_db, @transcript_json, @result_json,
-        @llm_call_id, @audio_kept, @audio_path, @error,
-        null, null, @high_risk_flags_json, @stt_source
-      )
-    `,
-    params: {
-      analysis_id: analysisId,
-      analyzed_at: analyzedAt,
-      conversation_id: input.conversationId,
-      phone_inquiry_id: input.phoneInquiryId ?? null,
-      org: input.org,
-      purpose: input.purpose,
-      analyzed_by: input.analyzedBy ?? null,
-      model: input.model ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
-      prompt_version_id: input.promptVersionId ?? null,
-      prompt_version: input.promptVersion ?? null,
-      human_result: human || null,
-      ai_label: aiLabel,
-      match,
-      checklist_json: JSON.stringify(checklist),
-      attitude_score: e.scores?.attitude?.score ?? null,
-      attitude_comment: e.scores?.attitude?.comment ?? null,
-      resolution_score: e.scores?.resolution?.score ?? null,
-      resolution_comment: e.scores?.resolution?.comment ?? null,
-      flow_score: e.scores?.flow?.score ?? null,
-      flow_comment: e.scores?.flow?.comment ?? null,
-      overall_summary: flattenOverallSummary(e.overallSummary) || null,
-      duration_sec: r.durationSec,
-      silence_count: r.silenceSummary.count,
-      silence_total_sec: r.silenceSummary.totalSec,
-      silence_longest_sec: r.silenceSummary.longestSec,
-      silence_ratio: r.silenceSummary.silenceRatio,
-      min_silence_sec: r.threshold.minSilenceSec,
-      noise_db: r.threshold.noiseDb,
-      transcript_json: JSON.stringify(e.transcript ?? []),
-      result_json: JSON.stringify(persistedResult),
-      llm_call_id: input.llmCallId ?? null,
-      audio_kept: input.audioKept ?? null,
-      audio_path: input.audioPath ?? null,
-      error: e.error ?? null,
-      high_risk_flags_json: JSON.stringify(e.highRiskFlags ?? []),
-      stt_source: parseSttSource(r.sttSource),
-    },
-    types: {
-      analysis_id: "STRING",
-      analyzed_at: "STRING",
-      conversation_id: "STRING",
-      phone_inquiry_id: "STRING",
-      org: "STRING",
-      purpose: "STRING",
-      analyzed_by: "STRING",
-      model: "STRING",
-      prompt_version_id: "STRING",
-      prompt_version: "STRING",
-      human_result: "STRING",
-      ai_label: "STRING",
-      match: "BOOL",
-      checklist_json: "STRING",
-      attitude_score: "INT64",
-      attitude_comment: "STRING",
-      resolution_score: "INT64",
-      resolution_comment: "STRING",
-      flow_score: "INT64",
-      flow_comment: "STRING",
-      overall_summary: "STRING",
-      duration_sec: "FLOAT64",
-      silence_count: "INT64",
-      silence_total_sec: "FLOAT64",
-      silence_longest_sec: "FLOAT64",
-      silence_ratio: "FLOAT64",
-      min_silence_sec: "INT64",
-      noise_db: "INT64",
-      transcript_json: "STRING",
-      result_json: "STRING",
-      llm_call_id: "STRING",
-      audio_kept: "BOOL",
-      audio_path: "STRING",
-      error: "STRING",
-      high_risk_flags_json: "STRING",
-      stt_source: "STRING",
-    },
-    ...loc(),
-  });
-  await saveEvaluationCriterionResults({
-    analysisId,
-    evalSetId: input.promptVersionId,
-    checklist,
-    createdAt: analyzedAt,
-  }).catch((e) =>
-    console.warn("[evalResultStore] normalized criterion results sync:", e instanceof Error ? e.message : e),
-  );
-
-  return {
-    analysisId,
-    analyzedAt,
-    conversationId: input.conversationId,
-    channel: "phone",
-    sourceSystem: PHONE_SOURCE_SYSTEM,
-    sourceId: input.conversationId,
-    phoneInquiryId: input.phoneInquiryId ?? null,
-    org: input.org,
+  return saveEvalRun({
     purpose: input.purpose,
-    analyzedBy: input.analyzedBy ?? null,
-    model: input.model ?? process.env.GEMINI_MODEL ?? "gemini-2.5-flash",
-    promptVersionId: input.promptVersionId ?? null,
-    promptVersion: input.promptVersion ?? null,
-    humanResult: human,
-    aiLabel,
-    match,
-    checklistJson: JSON.stringify(checklist),
-    resultJson: JSON.stringify(r),
-    transcriptJson: JSON.stringify(e.transcript ?? []),
-    llmCallId: input.llmCallId ?? null,
-    audioKept: input.audioKept ?? null,
-    audioPath: input.audioPath ?? null,
-    error: e.error ?? null,
-    reviewCompletedAt: null,
-    reviewCompletedBy: null,
-    sttSource: parseSttSource(r.sttSource),
-  };
+    org: input.org,
+    ref: phoneItemRef(input.conversationId),
+    analyzedBy: input.analyzedBy,
+    result: input.result,
+    promptVersionId: input.promptVersionId,
+    promptVersion: input.promptVersion,
+    model: input.model,
+    llmCallId: input.llmCallId,
+    parseConfig: input.parseConfig,
+    turnsJson: JSON.stringify(e.transcript ?? []),
+    channelAttrs: {
+      phoneInquiryId: input.phoneInquiryId ?? null,
+      durationSec: input.result.durationSec,
+      silenceCount: input.result.silenceSummary.count,
+      silenceTotalSec: input.result.silenceSummary.totalSec,
+      silenceLongestSec: input.result.silenceSummary.longestSec,
+      silenceRatio: input.result.silenceSummary.silenceRatio,
+      minSilenceSec: input.result.threshold.minSilenceSec,
+      noiseDb: input.result.threshold.noiseDb,
+      audioKept: input.audioKept ?? null,
+      audioPath: input.audioPath ?? null,
+      sttSource: parseSttSource(input.result.sttSource),
+      highRiskFlags: e.highRiskFlags ?? [],
+    },
+  });
 }
 
 /** conversation 기준 최근 비어 있지 않은 STT transcript (org/purpose 무관 — STT 재활용용). */
@@ -751,24 +547,10 @@ export async function getLatestStoredTranscript(conversationId: string): Promise
   transcript: import("./types").TranscriptSegment[];
   sttSource: SttSource | null;
 } | null> {
-  await ensureEvalResultsTable();
   const cid = conversationId.trim();
   if (!cid) return null;
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select ${q.transcriptSelect}
-        from ${sql()}
-        where ${q.eq("cid")}
-          and ${q.nonEmptyTranscript}
-        order by analyzed_at desc
-        limit 1
-      `,
-      params: { cid, ...q.params },
-      ...loc(),
-    });
-    const r = (rows as Record<string, unknown>[])[0];
+    const r = (await listServingTranscriptRows(cid, 1))[0];
     if (!r) return null;
     let transcript = parseTranscriptJson(String(r.transcript_json ?? ""));
     let fromJson: EvaluationResult | null = null;
@@ -841,23 +623,10 @@ function transcriptFromEvalRow(r: Record<string, unknown>): {
 
 /** conversation의 비어 있지 않은 저장 전사들(최신순). STT 버전 목록용. */
 export async function listStoredTranscriptVersions(conversationId: string): Promise<StoredTranscriptVersion[]> {
-  await ensureEvalResultsTable();
   const cid = conversationId.trim();
   if (!cid) return [];
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select ${q.transcriptSelect}
-        from ${sql()}
-        where ${q.eq("cid")}
-          and ${q.nonEmptyTranscript}
-        order by analyzed_at desc
-        limit @limit
-      `,
-      params: { cid, limit: STORED_TRANSCRIPT_VERSION_LIMIT, ...q.params },
-      ...loc(),
-    });
+    const rows = await listServingTranscriptRows(cid, STORED_TRANSCRIPT_VERSION_LIMIT);
     const out: StoredTranscriptVersion[] = [];
     for (const r of rows as Record<string, unknown>[]) {
       const { transcript, fromJson } = transcriptFromEvalRow(r);
@@ -881,20 +650,8 @@ export async function listStoredTranscriptVersions(conversationId: string): Prom
 export async function getStoredTranscriptByAnalysisId(analysisId: string): Promise<StoredTranscriptVersion | null> {
   const id = analysisId.trim();
   if (!id) return null;
-  await ensureEvalResultsTable();
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select ${q.id} as conversation_id, ${q.transcriptSelect}
-        from ${sql()}
-        where analysis_id = @id
-        limit 1
-      `,
-      params: { id },
-      ...loc(),
-    });
-    const r = (rows as Record<string, unknown>[])[0];
+    const r = await findServingEvalByAnalysisId(id);
     if (!r) return null;
     const { transcript, fromJson } = transcriptFromEvalRow(r);
     if (!transcript.length) return null;
@@ -921,36 +678,13 @@ export async function listStoredSttPresenceByConversationIds(
   const ids = [...new Set(conversationIds.map((s) => s.trim()).filter(Boolean))];
   const out = new Map<string, SttPresenceInfo>();
   if (!ids.length) return out;
-  await ensureEvalResultsTable();
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select ${q.id} as conversation_id, ${q.transcript} as transcript_json, result_json,
-               ${q.v2 ? "json_value(channel_attrs_json, '$.sttSource')" : "stt_source"} as stt_source
-        from ${sql()}
-        where ${q.inn("ids")}
-          and ${q.nonEmptyTranscript}
-        qualify row_number() over (partition by ${q.partition} order by analyzed_at desc) = 1
-      `,
-      params: { ids, ...q.params },
-      ...loc(),
-    });
-    for (const r of rows as Record<string, unknown>[]) {
-      const id = String(r.conversation_id ?? "").trim();
-      if (!id) continue;
-      let transcript = parseTranscriptJson(String(r.transcript_json ?? ""));
-      if (!transcript.length) {
-        try {
-          const fromJson = JSON.parse(String(r.result_json ?? "{}")) as EvaluationResult;
-          transcript = fromJson.evaluation?.transcript ?? [];
-        } catch {
-          transcript = [];
-        }
-      }
-      transcript = transcript.filter((t) => (t.text ?? "").trim().length > 0);
-      if (!transcript.length) continue;
-      out.set(id, {
+    const rows = await servingQuery<{ conversation_id: string; has_stt: boolean; stt_source: string | null }>(
+      `select conversation_id, has_stt, stt_source from call_serving where conversation_id = any($1::text[]) and has_stt`,
+      [ids],
+    );
+    for (const r of rows) {
+      out.set(r.conversation_id, {
         hasStt: true,
         sttSource: parseSttSource(r.stt_source) ?? "gcp",
       });
@@ -964,23 +698,17 @@ export async function listStoredSttPresenceByConversationIds(
 /** STT가 저장된 최근 conversation_id (org 무관, 배치·평가 저장분). */
 export async function listRecentConversationIdsWithStoredStt(limit = 100): Promise<string[]> {
   const lim = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
-  await ensureEvalResultsTable();
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select ${q.id} as conversation_id
-        from ${sql()}
-        where ${phoneScopeSql(q.v2)} and ${q.id} is not null and ${q.id} != ''
-          and ${q.nonEmptyTranscript}
-        qualify row_number() over (partition by ${q.partition} order by analyzed_at desc) = 1
-        order by analyzed_at desc
-        limit @limit
+    const rows = await servingQuery<{ conversation_id: string }>(
+      `
+      select conversation_id from call_serving
+      where has_stt
+      order by updated_at desc
+      limit $1
       `,
-      params: { limit: lim, ...q.params },
-      ...loc(),
-    });
-    return (rows as Record<string, unknown>[]).map((r) => String(r.conversation_id));
+      [lim],
+    );
+    return rows.map((r) => r.conversation_id);
   } catch (e) {
     console.warn("[evalResultStore] listRecentConversationIdsWithStoredStt:", e instanceof Error ? e.message : e);
     return [];
@@ -993,32 +721,14 @@ export async function getLatestEvalResult(opts: {
   org?: CallQualityOrg | null;
   purpose?: EvalResultPurpose | null;
 }): Promise<EvalResultRow | null> {
-  await ensureEvalResultsTable();
   const cid = opts.conversationId.trim();
   if (!cid) return null;
-  const q = await phoneQuery();
-  const clauses = [q.eq("cid")];
-  const params: Record<string, string> = { cid, ...q.params };
-  if (opts.org) {
-    clauses.push("org = @org");
-    params.org = opts.org;
-  }
-  if (opts.purpose) {
-    clauses.push("purpose = @purpose");
-    params.purpose = opts.purpose;
-  }
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select * from ${sql()}
-        where ${clauses.join(" and ")}
-        order by analyzed_at desc
-        limit 1
-      `,
-      params,
-      ...loc(),
+    const r = await findLatestServingEval({
+      conversationId: cid,
+      org: opts.org ?? null,
+      purpose: opts.purpose ?? null,
     });
-    const r = (rows as Record<string, unknown>[])[0];
     return r ? withLiveHumanResult(rowToEvalResult(r)) : null;
   } catch (e) {
     console.warn("[evalResultStore] getLatest:", e instanceof Error ? e.message : e);
@@ -1041,30 +751,15 @@ export async function listEvalResultSummaries(opts: {
   conversationId: string;
   org?: CallQualityOrg | null;
 }): Promise<CallEvalVersionSummary[]> {
-  await ensureEvalResultsTable();
   const cid = opts.conversationId.trim();
   if (!cid) return [];
-  const q = await phoneQuery();
-  const clauses = [q.eq("cid")];
-  const params: Record<string, string | number> = { cid, limit: EVAL_VERSION_LIMIT, ...q.params };
-  if (opts.org) {
-    clauses.push("org = @org");
-    params.org = opts.org;
-  }
-  clauses.push("(purpose is null or purpose != 'qa_eval')");
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select analysis_id, analyzed_at, prompt_version, prompt_version_id, ai_label, analyzed_by, purpose
-        from ${sql()}
-        where ${clauses.join(" and ")}
-        order by analyzed_at desc
-        limit @limit
-      `,
-      params,
-      ...loc(),
+    const rows = await listServingEvalSummaries({
+      conversationId: cid,
+      org: opts.org ?? null,
+      limit: EVAL_VERSION_LIMIT,
     });
-    return (rows as Record<string, unknown>[]).map((r) => {
+    return rows.map((r) => {
       const purposeRaw = r.purpose != null ? String(r.purpose) : null;
       return {
         analysisId: String(r.analysis_id ?? ""),
@@ -1088,14 +783,8 @@ export async function getEvalResultByAnalysisId(analysisId: string): Promise<{
 } | null> {
   const id = analysisId.trim();
   if (!id) return null;
-  await ensureEvalResultsTable();
   try {
-    const [rows] = await getBQ().query({
-      query: `select * from ${sql()} where analysis_id = @id limit 1`,
-      params: { id },
-      ...loc(),
-    });
-    const r = (rows as Record<string, unknown>[])[0];
+    const r = await findServingEvalByAnalysisId(id);
     if (!r) return null;
     const row = await withLiveHumanResult(rowToEvalResult(r));
     const result = await parseResult(row);
@@ -1107,49 +796,18 @@ export async function getEvalResultByAnalysisId(analysisId: string): Promise<{
   }
 }
 
+/** 평가 결과가 있는 conversation. 배치 중복 방지에 쓰므로 조회 실패는 그대로 던진다. */
 export async function listAnalyzedConversationIds(
   org: CallQualityOrg,
   conversationIds: string[],
 ): Promise<string[]> {
-  const ids = [...new Set(conversationIds.filter(Boolean))];
-  if (!ids.length) return [];
-  await ensureEvalResultsTable();
-  const q = await phoneQuery();
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select distinct ${q.id} as conversation_id
-        from ${sql()}
-        where org = @org and ${q.inn("ids")}
-      `,
-      params: { org, ids, ...q.params },
-      ...loc(),
-    });
-    return (rows as Record<string, unknown>[]).map((r) => String(r.conversation_id));
-  } catch (e) {
-    console.error("[evalResultStore] listAnalyzed:", e);
-    return [];
-  }
+  return listServingAnalyzedIds(org, conversationIds);
 }
 
 export async function listRecentAnalyzedConversationIds(org: CallQualityOrg, limit = 100): Promise<string[]> {
-  const lim = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
-  await ensureEvalResultsTable();
-  const q = await phoneQuery();
+  const lim = Math.min(Math.max(Math.floor(limit) || 100, 1), 1500);
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select ${q.id} as conversation_id
-        from ${sql()}
-        where org = @org and ${q.id} is not null and ${q.id} != ''
-        qualify row_number() over (partition by ${q.partition} order by analyzed_at desc) = 1
-        order by analyzed_at desc
-        limit @limit
-      `,
-      params: { org, limit: lim, ...q.params },
-      ...loc(),
-    });
-    return (rows as Record<string, unknown>[]).map((r) => String(r.conversation_id));
+    return await listServingRecentAnalyzedIds(org, lim);
   } catch (e) {
     console.error("[evalResultStore] listRecent:", e);
     return [];
@@ -1204,30 +862,11 @@ export async function listEvalFlagsByConversationIds(
     }
   >();
   if (!ids.length) return out;
-  await ensureEvalResultsTable();
-  const liveHuman = opts?.liveHuman !== false;
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: q.v2
-        ? `
-        select ${q.id} as conversation_id, ai_label, result_json, channel_attrs_json
-        from ${sql()}
-        where org = @org and ${q.inn("ids")}
-        qualify row_number() over (partition by ${q.partition} order by analyzed_at desc) = 1
-      `
-        : `
-        select conversation_id, review_completed_at, high_risk_flags_json, ai_label, human_result, checklist_json
-        from ${sql()}
-        where org = @org and conversation_id in unnest(@ids)
-        qualify row_number() over (partition by conversation_id order by analyzed_at desc) = 1
-      `,
-      params: { org, ids, ...q.params },
-      ...loc(),
-    });
+    const rows = await listServingLatestRows({ org, conversationIds: ids });
     const checklistById = new Map<string, string>();
-    for (const r of rows as Record<string, unknown>[]) {
-      const id = String(r.conversation_id ?? "");
+    for (const r of rows) {
+      const id = String(r.conversation_id ?? r.source_id ?? "");
       if (!id) continue;
       const checklistJson = r.checklist_json != null && String(r.checklist_json) !== ""
         ? String(r.checklist_json)
@@ -1243,63 +882,11 @@ export async function listEvalFlagsByConversationIds(
         humanResult: String(r.human_result ?? "").trim() || null,
       });
     }
-    if (liveHuman) {
+    if (opts?.liveHuman !== false) {
       await applyLiveHumanToFlags(out, checklistById);
     }
   } catch (e) {
-    if (q.v2) {
-      console.error("[evalResultStore] listEvalFlags:", e);
-      return out;
-    }
-    // high_risk_flags_json / 라벨 컬럼 미존재 시 폴백
-    try {
-      const [rows] = await getBQ().query({
-        query: `
-          select conversation_id, review_completed_at, ai_label, human_result
-          from ${sql()}
-          where org = @org and conversation_id in unnest(@ids)
-          qualify row_number() over (partition by conversation_id order by analyzed_at desc) = 1
-        `,
-        params: { org, ids },
-        ...loc(),
-      });
-      for (const r of rows as Record<string, unknown>[]) {
-        const id = String(r.conversation_id ?? "");
-        if (!id) continue;
-        out.set(id, {
-          reviewCompleted: r.review_completed_at != null,
-          highRiskFlagKeys: [],
-          aiLabel: String(r.ai_label ?? "").trim() || null,
-          humanResult: String(r.human_result ?? "").trim() || null,
-        });
-      }
-    } catch (e2) {
-      try {
-        const [rows] = await getBQ().query({
-          query: `
-            select conversation_id, review_completed_at
-            from ${sql()}
-            where org = @org and conversation_id in unnest(@ids)
-            qualify row_number() over (partition by conversation_id order by analyzed_at desc) = 1
-          `,
-          params: { org, ids },
-          ...loc(),
-        });
-        for (const r of rows as Record<string, unknown>[]) {
-          const id = String(r.conversation_id ?? "");
-          if (!id) continue;
-          out.set(id, {
-            reviewCompleted: r.review_completed_at != null,
-            highRiskFlagKeys: [],
-            aiLabel: null,
-            humanResult: null,
-          });
-        }
-      } catch (e3) {
-        console.error("[evalResultStore] listEvalFlags:", e3);
-      }
-    }
-    console.warn("[evalResultStore] listEvalFlags high_risk:", e instanceof Error ? e.message : e);
+    console.error("[evalResultStore] listEvalFlags:", e);
   }
   return out;
 }
@@ -1310,106 +897,22 @@ export async function listRecentConversationIdsByReview(
   opts: { reviewCompleted: boolean; limit?: number },
 ): Promise<string[]> {
   const lim = Math.min(Math.max(Math.floor(opts.limit ?? 100) || 100, 1), 500);
-  const q = await phoneQuery();
-  if (opts.reviewCompleted) {
-    const fromNew = await listRecentCompletedConversationIds({ org, limit: lim });
-    if (fromNew.length >= lim || q.v2) return fromNew.slice(0, lim);
-    // 레거시: 결과 행에 review_completed_at 이 찍힌 케이스
-    await ensureEvalResultsTable();
-    try {
-      const [rows] = await getBQ().query({
-        query: `
-          select conversation_id
-          from (
-            select conversation_id, review_completed_at, analyzed_at
-            from ${sql()}
-            where org = @org and conversation_id is not null and conversation_id != ''
-              and review_completed_at is not null
-            qualify row_number() over (partition by conversation_id order by analyzed_at desc) = 1
-          )
-          order by review_completed_at desc
-          limit @limit
-        `,
-        params: { org, limit: lim },
-        ...loc(),
-      });
-      const legacy = (rows as Record<string, unknown>[]).map((r) => String(r.conversation_id));
-      const seen = new Set(fromNew);
-      const merged = [...fromNew];
-      for (const id of legacy) {
-        if (seen.has(id)) continue;
-        seen.add(id);
-        merged.push(id);
-        if (merged.length >= lim) break;
-      }
-      return merged;
-    } catch (e) {
-      console.error("[evalResultStore] listByReview legacy:", e);
-      return fromNew;
-    }
-  }
-
-  await ensureEvalResultsTable();
-  if (q.v2) {
-    const candidates = await listRecentAnalyzedConversationIds(org, Math.min(lim * 3, 1500));
-    if (!candidates.length) return [];
-    const completions = await listLatestReviewCompletionsByConversationIds(candidates);
-    return candidates.filter((id) => !completions.has(id)).slice(0, lim);
-  }
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select conversation_id
-        from (
-          select conversation_id, review_completed_at, analyzed_at
-          from ${sql()}
-          where org = @org and conversation_id is not null and conversation_id != ''
-          qualify row_number() over (partition by conversation_id order by analyzed_at desc) = 1
-        )
-        where review_completed_at is null
-        order by analyzed_at desc
-        limit @limit
-      `,
-      params: { org, limit: Math.min(lim * 3, 1500) },
-      ...loc(),
-    });
-    const candidates = (rows as Record<string, unknown>[]).map((r) => String(r.conversation_id));
-    if (!candidates.length) return [];
-    const completions = await listLatestReviewCompletionsByConversationIds(candidates);
-    return candidates.filter((id) => !completions.has(id)).slice(0, lim);
-  } catch (e) {
-    console.error("[evalResultStore] listByReview:", e);
-    return [];
-  }
+  if (opts.reviewCompleted) return listRecentCompletedConversationIds({ org, limit: lim });
+  const candidates = await listRecentAnalyzedConversationIds(org, Math.min(lim * 3, 1500));
+  if (!candidates.length) return [];
+  const completions = await listLatestReviewCompletionsByConversationIds(candidates);
+  return candidates.filter((id) => !completions.has(id)).slice(0, lim);
 }
 
 /** purpose=qa_eval 기준 conversation별 최신 */
 export async function listLatestQaEvalResults(opts?: {
   promptVersionId?: string | null;
 }): Promise<Map<string, EvalResultRow>> {
-  await ensureEvalResultsTable();
   const versionId = (opts?.promptVersionId ?? "").trim() || null;
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: versionId
-        ? `
-        select *
-        from ${sql()}
-        where purpose = 'qa_eval' and prompt_version_id = @prompt_version_id
-        qualify row_number() over (partition by ${q.partition} order by analyzed_at desc) = 1
-      `
-        : `
-        select *
-        from ${sql()}
-        where purpose = 'qa_eval'
-        qualify row_number() over (partition by ${q.partition} order by analyzed_at desc) = 1
-      `,
-      ...(versionId ? { params: { prompt_version_id: versionId } } : {}),
-      ...loc(),
-    });
+    const rows = await listServingLatestRows({ purpose: "qa_eval", promptVersionId: versionId });
     const m = new Map<string, EvalResultRow>();
-    for (const r of rows as Record<string, unknown>[]) {
+    for (const r of rows) {
       const row = rowToEvalResult(r);
       if (row.conversationId) m.set(row.conversationId, row);
     }
@@ -1421,25 +924,8 @@ export async function listLatestQaEvalResults(opts?: {
 }
 
 export async function listUsedQaPromptVersions(): Promise<Array<{ versionId: string; resultCount: number }>> {
-  await ensureEvalResultsTable();
-  const q = await phoneQuery();
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select prompt_version_id as version_id,
-               count(distinct ${q.id}) as result_count
-        from ${sql()}
-        where purpose = 'qa_eval'
-          and prompt_version_id is not null and prompt_version_id != ''
-        group by prompt_version_id
-        order by result_count desc
-      `,
-      ...loc(),
-    });
-    return (rows as Record<string, unknown>[]).map((r) => ({
-      versionId: String(r.version_id),
-      resultCount: Number(r.result_count) || 0,
-    }));
+    return await listServingPromptVersionCounts("qa_eval");
   } catch (e) {
     console.warn("[evalResultStore] listUsedVersions:", e instanceof Error ? e.message : e);
     return [];
@@ -1477,6 +963,13 @@ export async function markReviewComplete(input: {
   const humanFinalLabel = deriveHumanResultLabel(checklist, reviews);
   const aiLabel = latest.aiLabel || deriveEvalLabel({ csChecklist: checklist }, DEFAULT_RESULT_PARSE_CONFIG);
   const match = labelsMatch(humanResult, aiLabel);
+  await patchCallApp(input.conversationId, {
+    reviewCompleted: true,
+    humanResult,
+    aiLabel,
+    clearClaim: true,
+    org: input.org,
+  });
 
   return {
     ...latest,
@@ -1491,7 +984,7 @@ export async function markReviewComplete(input: {
 
 /**
  * 수기 검수 완료된 call_eval 결과 (conversation별 최신 1건).
- * 완료 시각은 eval_review_completions 우선, 없으면 레거시 review_completed_at.
+ * 완료 시각은 serving_review_completions 기준.
  */
 export async function listReviewedCallEvalResults(opts: {
   org?: CallQualityOrg | null;
@@ -1499,7 +992,6 @@ export async function listReviewedCallEvalResults(opts: {
   endIso: string;
   limit?: number;
 }): Promise<EvalResultRow[]> {
-  await ensureEvalResultsTable();
   const lim = Math.min(Math.max(Math.floor(opts.limit ?? 2000) || 2000, 1), 5000);
   const org = opts.org ?? null;
 
@@ -1510,82 +1002,15 @@ export async function listReviewedCallEvalResults(opts: {
     limit: lim,
   });
   const completionById = new Map(completions.map((c) => [c.conversationId, c]));
-  const q = await phoneQuery();
-
-  // 레거시 완료 행 (결과 테이블에 review_completed_at)
-  let legacyIds: string[] = [];
-  if (!q.v2) {
-    try {
-      const [rows] = await getBQ().query({
-        query: `
-          select conversation_id
-          from (
-            select conversation_id, review_completed_at
-            from ${sql()}
-            where purpose = 'call_eval'
-              and review_completed_at is not null
-              and review_completed_at >= timestamp(@start_iso)
-              and review_completed_at < timestamp(@end_iso)
-              ${org ? "and org = @org" : ""}
-            qualify row_number() over (partition by conversation_id order by analyzed_at desc) = 1
-          )
-          order by review_completed_at desc
-          limit @limit
-        `,
-        params: {
-          start_iso: opts.startIso,
-          end_iso: opts.endIso,
-          limit: lim,
-          ...(org ? { org } : {}),
-        },
-        ...loc(),
-      });
-      legacyIds = (rows as Record<string, unknown>[]).map((r) => String(r.conversation_id));
-    } catch (e) {
-      console.warn("[evalResultStore] listReviewed legacy:", e instanceof Error ? e.message : e);
-    }
-  }
-
-  const ids: string[] = [];
-  const seen = new Set<string>();
-  for (const c of completions) {
-    if (seen.has(c.conversationId)) continue;
-    seen.add(c.conversationId);
-    ids.push(c.conversationId);
-    if (ids.length >= lim) break;
-  }
-  for (const id of legacyIds) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    ids.push(id);
-    if (ids.length >= lim) break;
-  }
+  const ids = [...completionById.keys()].slice(0, lim);
   if (!ids.length) return [];
 
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${sql()}
-        where purpose = 'call_eval'
-          and ${q.inn("ids")}
-          ${org ? "and org = @org" : ""}
-        qualify row_number() over (partition by ${q.partition} order by analyzed_at desc) = 1
-      `,
-      params: { ids, ...q.params, ...(org ? { org } : {}) },
-      ...loc(),
-    });
-    const mapped = (rows as Record<string, unknown>[]).map((r) => {
+    const rows = await listServingLatestRows({ org, conversationIds: ids, purpose: "call_eval" });
+    const mapped = rows.map((r) => {
       const row = rowToEvalResult(r);
       const c = completionById.get(row.conversationId);
-      if (c) {
-        return {
-          ...row,
-          reviewCompletedAt: c.completedAt,
-          reviewCompletedBy: c.completedBy,
-        };
-      }
-      return row;
+      return c ? { ...row, reviewCompletedAt: c.completedAt, reviewCompletedBy: c.completedBy } : row;
     });
     const live = await withLiveHumanResults(mapped);
     live.sort((a, b) => {
@@ -1599,4 +1024,3 @@ export async function listReviewedCallEvalResults(opts: {
     return [];
   }
 }
-

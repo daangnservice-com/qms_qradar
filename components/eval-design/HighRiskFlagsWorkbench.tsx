@@ -1,24 +1,26 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, Plus, Save, Trash2 } from "lucide-react";
-import type { HighRiskFlagKind, HighRiskFlagRule } from "@/lib/highRiskFlags";
+import type { EvaluationChannel } from "@/lib/evaluationChannel";
+import {
+  FEEDBACK_COUNT_TARGET_LABEL,
+  HIGH_RISK_CHANNEL_KINDS,
+  type FeedbackCountTarget,
+  type HighRiskFlagKind,
+  type HighRiskFlagRule,
+} from "@/lib/highRiskFlags";
 
-type Draft = {
-  ruleId?: string;
-  key: string;
-  label: string;
-  enabled: boolean;
-  kind: HighRiskFlagKind;
-  params: {
-    percentile?: number | null;
-    minMinutes?: number | null;
-    minPercent?: number | null;
-    metricKey?: string | null;
-    maxRate?: number | null;
-  };
-  sortOrder: number;
-};
+type Draft = Pick<
+  HighRiskFlagRule,
+  "key" | "label" | "enabled" | "channel" | "kind" | "params" | "sortOrder"
+> & { ruleId?: string };
+
+const CHANNEL_TABS: { key: EvaluationChannel; label: string; description: string }[] = [
+  { key: "phone", label: "콜", description: "통화시간·발화비율·감정·CSAT 신호" },
+  { key: "feedback", label: "피드백", description: "스레드의 문의·답변 건수" },
+  { key: "chatcs", label: "채팅", description: "추후 지원 예정" },
+];
 
 const KIND_OPTIONS: { value: HighRiskFlagKind; label: string; hint: string }[] = [
   {
@@ -41,7 +43,38 @@ const KIND_OPTIONS: { value: HighRiskFlagKind; label: string; hint: string }[] =
     label: "DSAT (고객 설문)",
     hint: "상담이력 ID로 매칭한 CSAT 점수가 기준 이하. 설문 미참여 통화는 해당 없음",
   },
+  {
+    value: "feedback_message_count",
+    label: "문의·답변 건수",
+    hint: "스레드의 문의/답변/합계 건수가 기준 이상. AI 평가 없이 목록에서 바로 판정",
+  },
 ];
+
+const COUNT_TARGETS: FeedbackCountTarget[] = ["feedback", "reply", "total"];
+
+/** 채널 탭을 옮기면 그 채널에 없는 종류는 첫 허용 종류로 되돌린다. */
+function defaultDraft(channel: EvaluationChannel, sortOrder: number): Draft {
+  if (channel === "feedback") {
+    return {
+      key: `feedback_flag_${sortOrder}`,
+      label: "새 플래그",
+      enabled: true,
+      channel,
+      kind: "feedback_message_count",
+      params: { countTarget: "total", minCount: 5 },
+      sortOrder,
+    };
+  }
+  return {
+    key: `flag_${sortOrder}`,
+    label: "새 플래그",
+    enabled: true,
+    channel,
+    kind: "long_call_percentile",
+    params: { percentile: 10, minMinutes: null },
+    sortOrder,
+  };
+}
 
 function toDraft(r: HighRiskFlagRule): Draft {
   return {
@@ -49,6 +82,7 @@ function toDraft(r: HighRiskFlagRule): Draft {
     key: r.key,
     label: r.label,
     enabled: r.enabled,
+    channel: r.channel,
     kind: r.kind,
     params: { ...r.params },
     sortOrder: r.sortOrder,
@@ -57,6 +91,7 @@ function toDraft(r: HighRiskFlagRule): Draft {
 
 export default function HighRiskFlagsWorkbench() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [channelTab, setChannelTab] = useState<EvaluationChannel>("phone");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -109,22 +144,22 @@ export default function HighRiskFlagsWorkbench() {
   };
 
   const add = () => {
-    setDrafts((prev) => [
-      ...prev,
-      {
-        key: `flag_${prev.length + 1}`,
-        label: "새 플래그",
-        enabled: true,
-        kind: "long_call_percentile",
-        params: { percentile: 10, minMinutes: null },
-        sortOrder: prev.length + 1,
-      },
-    ]);
+    setDrafts((prev) => [...prev, defaultDraft(channelTab, prev.length + 1)]);
   };
 
   const remove = (i: number) => {
     setDrafts((prev) => prev.filter((_, idx) => idx !== i).map((d, idx) => ({ ...d, sortOrder: idx + 1 })));
   };
+
+  // 탭으로 걸러도 저장은 전 채널 draft를 함께 보낸다(다른 탭 규칙이 사라지지 않게).
+  const visible = useMemo(
+    () => drafts.map((d, index) => ({ draft: d, index })).filter((row) => row.draft.channel === channelTab),
+    [drafts, channelTab],
+  );
+  const kindOptions = useMemo(
+    () => KIND_OPTIONS.filter((o) => HIGH_RISK_CHANNEL_KINDS[channelTab].includes(o.value)),
+    [channelTab],
+  );
 
   const save = async () => {
     setSaving(true);
@@ -153,12 +188,18 @@ export default function HighRiskFlagsWorkbench() {
         <div>
           <h1 className="text-[18px] font-bold tracking-tight">고위험군 플래그</h1>
           <p className="mt-1 text-[12px] leading-relaxed text-[var(--fg-secondary)]">
-            평가 진행 필터의 「고위험군만」 토글에 쓰입니다. 장콜은 케이스 메타로 실시간 계산하고, 발화
-            비율·격앙은 AI 평가 결과 metrics에 붙습니다.
+            평가 진행 필터의 「고위험군만」 토글에 쓰입니다. 채널마다 쓸 수 있는 신호가 달라서 탭으로
+            나눠 관리합니다. 장콜·문의 건수는 목록 조회에서 실시간 계산하고, 발화 비율·격앙은 AI 평가
+            결과 metrics에 붙습니다.
           </p>
         </div>
         <div className="flex gap-2">
-          <button type="button" className="qms-btn-ghost !h-8 text-[12px]" onClick={add} disabled={loading}>
+          <button
+            type="button"
+            className="qms-btn-ghost !h-8 text-[12px]"
+            onClick={add}
+            disabled={loading || !kindOptions.length}
+          >
             <Plus className="mr-1 inline h-3.5 w-3.5" />
             규칙 추가
           </button>
@@ -167,6 +208,31 @@ export default function HighRiskFlagsWorkbench() {
             저장
           </button>
         </div>
+      </div>
+
+      <div className="qms-card flex flex-wrap items-center gap-1 p-1.5">
+        {CHANNEL_TABS.map((tab) => {
+          const active = channelTab === tab.key;
+          const count = drafts.filter((d) => d.channel === tab.key).length;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              className={`flex-1 rounded-[var(--radius-md)] px-3 py-2 text-left transition ${
+                active
+                  ? "bg-[var(--brand-subtle)] text-[var(--brand)]"
+                  : "text-[var(--fg-secondary)] hover:bg-[var(--bg-muted)]"
+              }`}
+              onClick={() => setChannelTab(tab.key)}
+            >
+              <span className="block text-[13px] font-bold">
+                {tab.label}
+                {count > 0 && <span className="ml-1 font-medium">{count}</span>}
+              </span>
+              <span className="mt-0.5 block text-[11px] text-[var(--fg-tertiary)]">{tab.description}</span>
+            </button>
+          );
+        })}
       </div>
 
       {error && <p className="text-[12px] text-red-600">{error}</p>}
@@ -179,7 +245,18 @@ export default function HighRiskFlagsWorkbench() {
         </div>
       ) : (
         <div className="space-y-3">
-          {drafts.map((d, i) => (
+          {!kindOptions.length && (
+            <p className="qms-card p-4 text-[12px] leading-relaxed text-[var(--fg-secondary)]">
+              채팅 채널은 아직 쓸 수 있는 신호가 없어서 규칙을 만들 수 없습니다. 채팅 원문 적재가 붙으면
+              여기에 종류가 생깁니다.
+            </p>
+          )}
+          {kindOptions.length > 0 && !visible.length && (
+            <p className="qms-card p-4 text-[12px] text-[var(--fg-secondary)]">
+              이 채널에 저장된 규칙이 없습니다. 「규칙 추가」로 시작하세요.
+            </p>
+          )}
+          {visible.map(({ draft: d, index: i }) => (
             <section key={`${d.ruleId ?? d.key}-${i}`} className="qms-card space-y-3 p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <button
@@ -220,9 +297,23 @@ export default function HighRiskFlagsWorkbench() {
                   <select
                     className="qms-input !h-8 w-full !text-[12px]"
                     value={d.kind}
-                    onChange={(e) => update(i, { kind: e.target.value as HighRiskFlagKind })}
+                    onChange={(e) => {
+                      const kind = e.target.value as HighRiskFlagKind;
+                      // 건수 규칙은 최소 건수가 비면 아무것도 안 걸리므로 기본값을 채워 준다.
+                      update(i, {
+                        kind,
+                        params:
+                          kind === "feedback_message_count"
+                            ? {
+                                ...d.params,
+                                countTarget: d.params.countTarget ?? "total",
+                                minCount: d.params.minCount ?? 5,
+                              }
+                            : d.params,
+                      });
+                    }}
                   >
-                    {KIND_OPTIONS.map((o) => (
+                    {kindOptions.map((o) => (
                       <option key={o.value} value={o.value}>
                         {o.label}
                       </option>
@@ -330,6 +421,38 @@ export default function HighRiskFlagsWorkbench() {
                     onChange={(e) => updateParams(i, { metricKey: e.target.value.trim() || "agitated" })}
                   />
                 </label>
+              )}
+
+              {d.kind === "feedback_message_count" && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="space-y-1 text-[11px] text-[var(--fg-tertiary)]">
+                    변수
+                    <select
+                      className="qms-input !h-8 w-full !text-[12px]"
+                      value={d.params.countTarget ?? "total"}
+                      onChange={(e) => updateParams(i, { countTarget: e.target.value as FeedbackCountTarget })}
+                    >
+                      {COUNT_TARGETS.map((target) => (
+                        <option key={target} value={target}>
+                          {FEEDBACK_COUNT_TARGET_LABEL[target]}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-[11px] text-[var(--fg-tertiary)]">
+                    최소 건수 (이상)
+                    <input
+                      type="number"
+                      className="qms-input !h-8 w-full !text-[12px]"
+                      value={d.params.minCount ?? ""}
+                      min={1}
+                      placeholder="예: 5"
+                      onChange={(e) =>
+                        updateParams(i, { minCount: e.target.value === "" ? null : Number(e.target.value) })
+                      }
+                    />
+                  </label>
+                </div>
               )}
             </section>
           ))}

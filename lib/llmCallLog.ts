@@ -1,10 +1,17 @@
+// LLM 호출 메타. 요청 경로는 서빙 Postgres(serving_llm_call_logs)에만 쓰고 BQ로는 야간 덤프가 내보낸다.
 import { randomUUID } from "node:crypto";
 import { getBQ } from "./bigquery";
+import { servingQuery } from "./servingDb";
 import { growthBq } from "./bqRefs";
 import { addColumnsIfMissing } from "./bqSchema";
 import { estimateTokenCost, USD_KRW } from "./llmPricing";
 
-export type LlmCallPurpose = "call_eval" | "qa_eval" | "feedback_eval" | "prompt_improve";
+export type LlmCallPurpose =
+  | "call_eval"
+  | "qa_eval"
+  | "feedback_eval"
+  | "prompt_improve"
+  | "reply_polish";
 
 export interface LlmCallMeta {
   model?: string | null;
@@ -27,7 +34,6 @@ export interface LlmCallMeta {
 }
 
 const TABLE = growthBq.llmCallLogs;
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
 
 const SCHEMA = [
   { name: "call_id", type: "STRING", mode: "REQUIRED" },
@@ -92,6 +98,107 @@ function safeJson(v: unknown): string | null {
   }
 }
 
+function objOf(raw: unknown): Record<string, unknown> | null {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function intOf(v: unknown): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : 0;
+}
+
+/**
+ * 집계용 토큰 수. 캐시는 usageMetadata.cachedContentTokenCount,
+ * 오디오는 컬럼 값이 있으면 그것, 없으면 promptTokensDetails 의 AUDIO 합.
+ */
+export function llmUsageTokens(rawUsage: unknown, audioColumn: number | null | undefined): {
+  audioTokens: number;
+  cachedTokens: number;
+} {
+  const u = objOf(rawUsage);
+  const cachedTokens = intOf(u?.cachedContentTokenCount ?? u?.cached_content_token_count ?? 0);
+  if (audioColumn != null && audioColumn !== 0) return { audioTokens: intOf(audioColumn), cachedTokens };
+  const details = u?.promptTokensDetails ?? u?.prompt_tokens_details;
+  let audioTokens = 0;
+  if (Array.isArray(details)) {
+    for (const d of details) {
+      const o = objOf(d);
+      if (String(o?.modality ?? "").toUpperCase() === "AUDIO") audioTokens += intOf(o?.tokenCount ?? o?.token_count ?? 0);
+    }
+  }
+  return { audioTokens, cachedTokens };
+}
+
+export type LlmCallLogRow = {
+  callId: string;
+  ts: string;
+  purpose: string | null;
+  conversationId: string | null;
+  model: string | null;
+  promptVersionId: string | null;
+  templateKey: string | null;
+  latencyMs: number | null;
+  promptTokenCount: number | null;
+  candidatesTokenCount: number | null;
+  totalTokenCount: number | null;
+  audioPromptTokenCount: number | null;
+  finishReason: string | null;
+  seed: string | null;
+  responseId: string | null;
+  rawUsageJson: string | null;
+  rawResponseMetaJson: string | null;
+  error: string | null;
+};
+
+/** 로그 행 적재. 백필이면 exported 로 표시해 다시 덤프하지 않는다. */
+export async function insertLlmCallLogs(rows: LlmCallLogRow[], opts?: { exported?: boolean }): Promise<void> {
+  for (const r of rows) {
+    const { audioTokens, cachedTokens } = llmUsageTokens(r.rawUsageJson, r.audioPromptTokenCount);
+    await servingQuery(
+      `
+      insert into serving_llm_call_logs
+        (call_id, ts, purpose, conversation_id, model, prompt_version_id, template_key,
+         latency_ms, prompt_token_count, candidates_token_count, total_token_count,
+         audio_prompt_token_count, finish_reason, seed, response_id, raw_usage_json,
+         raw_response_meta_json, error, audio_tokens, cached_tokens, exported_at)
+      values ($1,$2::timestamptz,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+        case when $21::boolean then now() else null end)
+      on conflict (call_id) do nothing
+      `,
+      [
+        r.callId,
+        r.ts,
+        r.purpose,
+        r.conversationId,
+        r.model,
+        r.promptVersionId,
+        r.templateKey,
+        r.latencyMs,
+        r.promptTokenCount,
+        r.candidatesTokenCount,
+        r.totalTokenCount,
+        r.audioPromptTokenCount,
+        r.finishReason,
+        r.seed,
+        r.responseId,
+        r.rawUsageJson,
+        r.rawResponseMetaJson,
+        r.error,
+        audioTokens,
+        cachedTokens,
+        opts?.exported === true,
+      ],
+    );
+  }
+}
+
 /** LLM 호출 메타 1행 적재. 실패해도 호출부 평가를 막지 않음. */
 export async function logLlmCall(input: {
   purpose: LlmCallPurpose;
@@ -99,65 +206,29 @@ export async function logLlmCall(input: {
   meta: LlmCallMeta;
 }): Promise<string | null> {
   try {
-    await ensureLlmCallLogTable();
     const callId = randomUUID();
-    const ts = new Date().toISOString();
-    const sql = growthBq.resultsSql(TABLE);
-    await getBQ().query({
-      query: `
-        insert into ${sql}
-          (call_id, ts, purpose, conversation_id, model, prompt_version_id, template_key,
-           latency_ms, prompt_token_count, candidates_token_count, total_token_count,
-           audio_prompt_token_count,
-           finish_reason, seed, response_id, raw_usage_json, raw_response_meta_json, error)
-        values
-          (@call_id, timestamp(@ts), @purpose, @conversation_id, @model, @prompt_version_id, @template_key,
-           @latency_ms, @prompt_token_count, @candidates_token_count, @total_token_count,
-           @audio_prompt_token_count,
-           @finish_reason, @seed, @response_id, @raw_usage_json, @raw_response_meta_json, @error)
-      `,
-      params: {
-        call_id: callId,
-        ts,
+    await insertLlmCallLogs([
+      {
+        callId,
+        ts: new Date().toISOString(),
         purpose: input.purpose,
-        conversation_id: input.conversationId ?? null,
+        conversationId: input.conversationId ?? null,
         model: input.meta.model ?? null,
-        prompt_version_id: input.meta.promptVersionId ?? null,
-        template_key: input.meta.templateKey ?? null,
-        latency_ms: input.meta.latencyMs ?? null,
-        prompt_token_count: input.meta.promptTokenCount ?? null,
-        candidates_token_count: input.meta.candidatesTokenCount ?? null,
-        total_token_count: input.meta.totalTokenCount ?? null,
-        audio_prompt_token_count: input.meta.audioPromptTokenCount ?? null,
-        finish_reason: input.meta.finishReason ?? null,
+        promptVersionId: input.meta.promptVersionId ?? null,
+        templateKey: input.meta.templateKey ?? null,
+        latencyMs: input.meta.latencyMs ?? null,
+        promptTokenCount: input.meta.promptTokenCount ?? null,
+        candidatesTokenCount: input.meta.candidatesTokenCount ?? null,
+        totalTokenCount: input.meta.totalTokenCount ?? null,
+        audioPromptTokenCount: input.meta.audioPromptTokenCount ?? null,
+        finishReason: input.meta.finishReason ?? null,
         seed: input.meta.seed != null ? String(input.meta.seed) : null,
-        response_id: input.meta.responseId ?? null,
-        raw_usage_json: safeJson(input.meta.rawUsage),
-        raw_response_meta_json: safeJson(input.meta.rawResponseMeta),
+        responseId: input.meta.responseId ?? null,
+        rawUsageJson: safeJson(input.meta.rawUsage),
+        rawResponseMetaJson: safeJson(input.meta.rawResponseMeta),
         error: input.meta.error ?? null,
       },
-      types: {
-        call_id: "STRING",
-        ts: "STRING",
-        purpose: "STRING",
-        conversation_id: "STRING",
-        model: "STRING",
-        prompt_version_id: "STRING",
-        template_key: "STRING",
-        latency_ms: "INT64",
-        prompt_token_count: "INT64",
-        candidates_token_count: "INT64",
-        total_token_count: "INT64",
-        audio_prompt_token_count: "INT64",
-        finish_reason: "STRING",
-        seed: "STRING",
-        response_id: "STRING",
-        raw_usage_json: "STRING",
-        raw_response_meta_json: "STRING",
-        error: "STRING",
-      },
-      ...loc(),
-    });
+    ]);
     return callId;
   } catch (e) {
     console.error("[llmCallLog] insert failed:", e instanceof Error ? e.message : e);
@@ -230,115 +301,61 @@ export interface LlmUsageStats {
   }>;
 }
 
-const CACHED_EXPR = `ifnull(safe_cast(coalesce(
-  json_value(raw_usage_json, '$.cachedContentTokenCount'),
-  json_value(raw_usage_json, '$.cached_content_token_count')
-) as int64), 0)`;
-
-/** 컬럼 우선, 없으면 raw_usage_json.promptTokensDetails AUDIO 합 */
-const AUDIO_EXPR = `ifnull(nullif(audio_prompt_token_count, 0), (
-  select ifnull(sum(ifnull(safe_cast(coalesce(
-    json_value(d, '$.tokenCount'),
-    json_value(d, '$.token_count')
-  ) as int64), 0)), 0)
-  from unnest(coalesce(
-    json_query_array(raw_usage_json, '$.promptTokensDetails'),
-    json_query_array(raw_usage_json, '$.prompt_tokens_details'),
-    []
-  )) as d
-  where upper(ifnull(json_value(d, '$.modality'), '')) = 'AUDIO'
-))`;
-
 export async function getLlmUsageStats(days = 30): Promise<LlmUsageStats> {
-  await ensureLlmCallLogTable();
-  const sql = growthBq.resultsSql(TABLE);
   const safeDays = Math.min(Math.max(1, days), 90);
+  const since = `ts >= now() - make_interval(days => $1)`;
+  const sums = `
+    coalesce(sum(prompt_token_count), 0) as prompt_tokens,
+    coalesce(sum(audio_tokens), 0) as audio_tokens,
+    coalesce(sum(candidates_token_count), 0) as candidates_tokens,
+    coalesce(sum(cached_tokens), 0) as cached_tokens
+  `;
+  const errors = `count(*) filter (where error is not null and error <> '')`;
 
-  const [summaryRows, dailyRows, purposeRows, modelRows] = await Promise.all([
-    getBQ().query({
-      query: `
-        select
-          count(*) as total_calls,
-          countif(error is not null and error != '') as error_calls,
-          ifnull(sum(prompt_token_count), 0) as prompt_tokens,
-          ifnull(sum(${AUDIO_EXPR}), 0) as audio_tokens,
-          ifnull(sum(candidates_token_count), 0) as candidates_tokens,
-          ifnull(sum(${CACHED_EXPR}), 0) as cached_tokens,
-          ifnull(sum(total_token_count), 0) as total_tokens,
-          ifnull(avg(latency_ms), 0) as avg_latency
-        from ${sql}
-        where ts >= timestamp_sub(current_timestamp(), interval @days day)
+  const [summary, dailyRows, purposeRows, modelRows] = await Promise.all([
+    servingQuery(
+      `
+      select count(*) as total_calls, ${errors} as error_calls, ${sums},
+        coalesce(sum(total_token_count), 0) as total_tokens,
+        coalesce(avg(latency_ms), 0) as avg_latency
+      from serving_llm_call_logs where ${since}
       `,
-      params: { days: safeDays },
-      types: { days: "INT64" },
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        select
-          format_date('%Y-%m-%d', date(ts, 'Asia/Seoul')) as d,
-          count(*) as calls,
-          ifnull(sum(total_token_count), 0) as tokens,
-          ifnull(sum(prompt_token_count), 0) as prompt_tokens,
-          ifnull(sum(${AUDIO_EXPR}), 0) as audio_tokens,
-          ifnull(sum(candidates_token_count), 0) as candidates_tokens,
-          ifnull(sum(${CACHED_EXPR}), 0) as cached_tokens,
-          ifnull(avg(latency_ms), 0) as avg_latency,
-          countif(error is not null and error != '') as errors
-        from ${sql}
-        where ts >= timestamp_sub(current_timestamp(), interval @days day)
-        group by d
-        order by d
+      [safeDays],
+    ),
+    servingQuery(
+      `
+      select to_char(ts at time zone 'Asia/Seoul', 'YYYY-MM-DD') as d, count(*) as calls,
+        coalesce(sum(total_token_count), 0) as tokens, ${sums},
+        coalesce(avg(latency_ms), 0) as avg_latency, ${errors} as errors
+      from serving_llm_call_logs where ${since}
+      group by d order by d
       `,
-      params: { days: safeDays },
-      types: { days: "INT64" },
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        select
-          ifnull(purpose, '(unknown)') as purpose,
-          count(*) as calls,
-          ifnull(sum(total_token_count), 0) as tokens,
-          ifnull(sum(prompt_token_count), 0) as prompt_tokens,
-          ifnull(sum(${AUDIO_EXPR}), 0) as audio_tokens,
-          ifnull(sum(candidates_token_count), 0) as candidates_tokens,
-          ifnull(sum(${CACHED_EXPR}), 0) as cached_tokens,
-          ifnull(avg(latency_ms), 0) as avg_latency
-        from ${sql}
-        where ts >= timestamp_sub(current_timestamp(), interval @days day)
-        group by purpose
-        order by calls desc
+      [safeDays],
+    ),
+    servingQuery(
+      `
+      select coalesce(purpose, '(unknown)') as purpose, count(*) as calls,
+        coalesce(sum(total_token_count), 0) as tokens, ${sums},
+        coalesce(avg(latency_ms), 0) as avg_latency
+      from serving_llm_call_logs where ${since}
+      group by 1 order by calls desc
       `,
-      params: { days: safeDays },
-      types: { days: "INT64" },
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        select
-          ifnull(model, '(unknown)') as model,
-          count(*) as calls,
-          ifnull(sum(total_token_count), 0) as tokens,
-          ifnull(sum(prompt_token_count), 0) as prompt_tokens,
-          ifnull(sum(${AUDIO_EXPR}), 0) as audio_tokens,
-          ifnull(sum(candidates_token_count), 0) as candidates_tokens,
-          ifnull(sum(${CACHED_EXPR}), 0) as cached_tokens
-        from ${sql}
-        where ts >= timestamp_sub(current_timestamp(), interval @days day)
-        group by model
-        order by calls desc
+      [safeDays],
+    ),
+    servingQuery(
+      `
+      select coalesce(model, '(unknown)') as model, count(*) as calls,
+        coalesce(sum(total_token_count), 0) as tokens, ${sums}
+      from serving_llm_call_logs where ${since}
+      group by 1 order by calls desc
       `,
-      params: { days: safeDays },
-      types: { days: "INT64" },
-      ...loc(),
-    }),
+      [safeDays],
+    ),
   ]);
-
-  const s = (summaryRows[0] as Record<string, unknown>[])[0] ?? {};
+  const s = (summary as Record<string, unknown>[])[0] ?? {};
   const num = (v: unknown) => Number(v ?? 0);
 
-  const byModel = (modelRows[0] as Record<string, unknown>[]).map((r) => {
+  const byModel = (modelRows as Record<string, unknown>[]).map((r) => {
     const model = String(r.model);
     const promptTokens = num(r.prompt_tokens);
     const audioPromptTokens = num(r.audio_tokens);
@@ -394,7 +411,7 @@ export async function getLlmUsageStats(days = 30): Promise<LlmUsageStats> {
     { textInputUsd: 0, audioInputUsd: 0, inputUsd: 0, outputUsd: 0, cachedUsd: 0, totalUsd: 0 },
   );
 
-  const daily = (dailyRows[0] as Record<string, unknown>[]).map((r) => {
+  const daily = (dailyRows as Record<string, unknown>[]).map((r) => {
     const promptTokens = num(r.prompt_tokens);
     const audioPromptTokens = num(r.audio_tokens);
     const candidatesTokens = num(r.candidates_tokens);
@@ -420,7 +437,7 @@ export async function getLlmUsageStats(days = 30): Promise<LlmUsageStats> {
     };
   });
 
-  const byPurpose = (purposeRows[0] as Record<string, unknown>[]).map((r) => {
+  const byPurpose = (purposeRows as Record<string, unknown>[]).map((r) => {
     const promptTokens = num(r.prompt_tokens);
     const audioPromptTokens = num(r.audio_tokens);
     const candidatesTokens = num(r.candidates_tokens);

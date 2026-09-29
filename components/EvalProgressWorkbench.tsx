@@ -11,6 +11,7 @@ import {
   Loader2,
   Play,
   RefreshCw,
+  Server,
   ShoppingCart,
   Sparkles,
 } from "lucide-react";
@@ -52,6 +53,8 @@ import SttReviewPanel from "@/components/SttReviewPanel";
 import CallQualityEvalHelpTip from "@/components/CallQualityEvalHelpTip";
 import CsatPanel, { CsatRateBadge } from "@/components/CsatPanel";
 import QmsLoadingOverlay from "@/components/QmsLoadingOverlay";
+import SttReprocessDialog, { type SttReprocessTarget } from "@/components/SttReprocessDialog";
+import SttIssueReportDialog from "@/components/SttIssueReportDialog";
 import { ActionButton } from "seed-design/ui/action-button";
 import { buildSttChecklistBadges } from "@/lib/sttChecklistBadges";
 import { resolveCriterionLabel } from "@/lib/criterionLabel";
@@ -65,6 +68,11 @@ import { buildCallQualityObserveDeepLink, readCallQualityDeepLink } from "@/lib/
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { handleOf, sameEmail } from "@/lib/evalReviewClaim";
 import type { HighRiskFlagRule } from "@/lib/highRiskFlags";
+import type { LocalSttQueueView } from "@/lib/sttBatchTypes";
+import { isInFlightSttStatus, localSttQueueLabel } from "@/lib/sttBatchTypes";
+import type { SttIssueTypeId } from "@/lib/sttIssueTypes";
+import type { CallEvalVersionSummary, CallSttVersionSummary } from "@/lib/callArtifactVersions";
+import { evalVersionLabel } from "@/lib/callArtifactVersions";
 import {
   overlapsToOverlays,
   parseAgitatedSpansFromComment,
@@ -74,6 +82,8 @@ import {
 } from "@/lib/waveformOverlays";
 
 const QUICK_FILTER_DEBOUNCE_MS = 1500;
+/** 로컬 STT가 실제로 돌아가고 있을 때만 큐 상태를 본다. 대기 중엔 선택 시 1회. */
+const STT_QUEUE_POLL_MS = 4000;
 
 const STEP_LABEL: Record<EvaluateStep, string> = {
   genesys: "Genesys에서 녹취 확보 중",
@@ -81,6 +91,14 @@ const STEP_LABEL: Record<EvaluateStep, string> = {
   transcode: "오디오 변환 중",
   analyze: "전사·채점 중 (가장 오래 걸려요)",
   save: "결과 저장 중",
+};
+
+const OBSERVE_STEP_LABEL: Record<string, string> = {
+  genesys: "Genesys에서 녹취 확보 중",
+  download: "녹취 내려받는 중",
+  transcode: "오디오 변환 중",
+  transcribe: "전사(STT) 중 (가장 오래 걸려요)",
+  save: "전사 저장 중",
 };
 
 function promptVersionBadgeMeta(status: string | null | undefined): {
@@ -111,7 +129,8 @@ function filtersActive(f: SampleFilters): boolean {
       f.csatIncludeNone ||
       f.reviewStatus ||
       f.sttStatus ||
-      f.mineOnly,
+      f.mineOnly ||
+      f.reviewRequestedOnly,
   );
 }
 
@@ -262,10 +281,24 @@ export default function EvalProgressWorkbench({
   const [highRiskOptions, setHighRiskOptions] = useState<HighRiskFlagOption[]>([]);
   /** AI 평가 없이 STT만 있는 통화의 전사 — conversationId → segments */
   const [sttOnly, setSttOnly] = useState<Record<string, { segments: TranscriptSegment[]; sttSource: SttSource | null; durationSec: number | null }>>({});
+  const [sttVersions, setSttVersions] = useState<Record<string, CallSttVersionSummary[]>>({});
+  const [selectedSttVersionId, setSelectedSttVersionId] = useState<Record<string, string>>({});
+  const [sttVersionBusyId, setSttVersionBusyId] = useState<string | null>(null);
+  const [evalVersions, setEvalVersions] = useState<Record<string, CallEvalVersionSummary[]>>({});
+  const [selectedEvalVersionId, setSelectedEvalVersionId] = useState<Record<string, string>>({});
+  const [sttBusyId, setSttBusyId] = useState<string | null>(null);
+  const [queueById, setQueueById] = useState<Record<string, LocalSttQueueView>>({});
+  const [queueHint, setQueueHint] = useState<string | null>(null);
+  /** 온디맨드 STT 요청 후 폴링을 다시 켠다 */
+  const [sttPollNonce, setSttPollNonce] = useState(0);
+  const [reprocessOpen, setReprocessOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [issueBusy, setIssueBusy] = useState(false);
 
   const seekRef = useRef<(sec: number) => void>(() => {});
   const centerScrollRef = useRef<HTMLElement | null>(null);
   const autoEvalTried = useRef(false);
+  const loadSttOnlyRef = useRef<(id: string, opts?: { versionId?: string | null }) => Promise<void>>(async () => {});
 
   useEffect(() => {
     fetch("/api/eval-design/high-risk-flags")
@@ -274,7 +307,7 @@ export default function EvalProgressWorkbench({
         setHighRiskFlagLabels(buildHighRiskFlagLabelMap(d.rules));
         setHighRiskOptions(
           (d.rules ?? [])
-            .filter((r) => r.enabled)
+            .filter((r) => r.enabled && (r.channel ?? "phone") === "phone")
             .sort((a, b) => a.sortOrder - b.sortOrder)
             .map((r) => ({ key: r.key, label: r.label || r.key })),
         );
@@ -381,14 +414,15 @@ export default function EvalProgressWorkbench({
   );
 
   const fetchResult = useCallback(
-    async (id: string): Promise<EvaluationResult | null> => {
+    async (id: string, analysisId?: string | null): Promise<EvaluationResult | null> => {
       try {
-        const r = await fetch(
-          `/api/call-quality/results?conversationId=${encodeURIComponent(id)}&org=${org}`,
-        );
+        const qs = new URLSearchParams({ conversationId: id, org });
+        if (analysisId) qs.set("analysisId", analysisId);
+        const r = await fetch(`/api/call-quality/results?${qs.toString()}`);
         if (!r.ok) return null;
         const data = (await r.json()) as {
           result: EvaluationResult;
+          versions?: CallEvalVersionSummary[];
           meta?: {
             analysisId?: string | null;
             purpose?: string | null;
@@ -404,27 +438,40 @@ export default function EvalProgressWorkbench({
           };
         };
         if (!data?.result) return null;
+        const resolvedAnalysisId = data.meta?.analysisId ?? data.result.analysisId;
         const withId = {
           ...data.result,
           conversationId: id,
-          analysisId: data.meta?.analysisId ?? data.result.analysisId,
+          analysisId: resolvedAnalysisId,
         };
         setResults((prev) => ({ ...prev, [id]: withId }));
+        if (data.versions) {
+          setEvalVersions((prev) => ({ ...prev, [id]: data.versions ?? [] }));
+        }
+        if (resolvedAnalysisId) {
+          setSelectedEvalVersionId((prev) => ({ ...prev, [id]: resolvedAnalysisId }));
+        }
         if (data.meta) {
           setResultMeta((prev) => ({ ...prev, [id]: data.meta! }));
-          setSamples((prev) =>
-            prev.map((s) =>
-              s.conversationId === id
-                ? {
-                    ...s,
-                    analyzed: true,
-                    reviewCompleted: Boolean(data.meta?.reviewCompletedAt) || s.reviewCompleted,
-                    aiLabel: data.meta?.aiLabel ?? s.aiLabel ?? null,
-                    humanResult: data.meta?.humanResult ?? s.humanResult ?? null,
-                  }
-                : s,
-            ),
-          );
+          const showingLatest =
+            !analysisId ||
+            !data.versions?.length ||
+            data.versions[0]?.analysisId === resolvedAnalysisId;
+          if (showingLatest) {
+            setSamples((prev) =>
+              prev.map((s) =>
+                s.conversationId === id
+                  ? {
+                      ...s,
+                      analyzed: true,
+                      reviewCompleted: Boolean(data.meta?.reviewCompletedAt) || s.reviewCompleted,
+                      aiLabel: data.meta?.aiLabel ?? s.aiLabel ?? null,
+                      humanResult: data.meta?.humanResult ?? s.humanResult ?? null,
+                    }
+                  : s,
+              ),
+            );
+          }
         }
         return withId;
       } catch {
@@ -432,6 +479,16 @@ export default function EvalProgressWorkbench({
       }
     },
     [org],
+  );
+
+  const selectEvalVersion = useCallback(
+    async (analysisId: string) => {
+      if (!selectedId || !analysisId) return;
+      setLoadingResult(true);
+      await fetchResult(selectedId, analysisId);
+      setLoadingResult(false);
+    },
+    [fetchResult, selectedId],
   );
 
   const completeReview = useCallback(async () => {
@@ -578,6 +635,26 @@ export default function EvalProgressWorkbench({
         const withId = { ...result, conversationId };
         const nextAiLabel = deriveEvalLabel({ csChecklist: result.evaluation?.csChecklist });
         setResults((prev) => ({ ...prev, [conversationId]: withId }));
+        const newAnalysisId = result.analysisId?.trim() || null;
+        if (newAnalysisId) {
+          const summary: CallEvalVersionSummary = {
+            analysisId: newAnalysisId,
+            analyzedAt: new Date().toISOString(),
+            promptVersion: result.promptConfig?.version.versionLabel ?? null,
+            promptVersionId: result.promptConfig?.version.versionId ?? null,
+            aiLabel: nextAiLabel,
+            analyzedBy: null,
+            purpose: "call_eval",
+          };
+          setEvalVersions((prev) => ({
+            ...prev,
+            [conversationId]: [
+              summary,
+              ...(prev[conversationId] ?? []).filter((v) => v.analysisId !== newAnalysisId),
+            ],
+          }));
+          setSelectedEvalVersionId((prev) => ({ ...prev, [conversationId]: newAnalysisId }));
+        }
         setResultMeta((prev) => {
           const next = { ...prev };
           delete next[conversationId];
@@ -602,6 +679,7 @@ export default function EvalProgressWorkbench({
           totalMs: Date.now() - tWall0,
           callDurationSec: result.durationSec ?? sample.callDurationSec,
         });
+        void loadSttOnlyRef.current(conversationId);
       } catch (e) {
         setEvalError(e instanceof Error ? e.message : "평가에 실패했어요");
       } finally {
@@ -613,21 +691,31 @@ export default function EvalProgressWorkbench({
   );
 
   /**
-   * AI 평가 결과에 전사가 없을 때(로컬 배치 STT만 돌아간 건) 저장된 STT를 따로 읽는다.
-   * observe API가 저장된 전사를 그대로 준다 — 여기서 STT를 새로 돌리지는 않는다.
+   * STT는 AI 평가와 따로 고른다. observe API가 버전 목록 + 선택한(기본 최신) 전사를 준다.
    */
   const loadSttOnly = useCallback(
-    async (id: string) => {
+    async (id: string, opts?: { versionId?: string | null }) => {
+      const versionId = opts?.versionId?.trim() || undefined;
+      if (versionId) setSttVersionBusyId(id);
       try {
-        const r = await fetch(
-          `/api/call-quality/observe?conversationId=${encodeURIComponent(id)}&org=${org}`,
-        );
-        if (!r.ok) return; // 404 = 전사 없음(정상)
+        const qs = new URLSearchParams({ conversationId: id, org });
+        if (versionId) qs.set("versionId", versionId);
+        const r = await fetch(`/api/call-quality/observe?${qs.toString()}`);
+        if (!r.ok) {
+          if (!versionId) {
+            setSttVersions((prev) => ({ ...prev, [id]: [] }));
+          }
+          return;
+        }
         const d = (await r.json()) as {
           transcript?: TranscriptSegment[];
           sttSource?: SttSource | null;
           durationSec?: number | null;
+          versionId?: string | null;
+          versions?: CallSttVersionSummary[];
         };
+        if (d.versions) setSttVersions((prev) => ({ ...prev, [id]: d.versions ?? [] }));
+        if (d.versionId) setSelectedSttVersionId((prev) => ({ ...prev, [id]: d.versionId! }));
         if (!d.transcript?.length) return;
         setSttOnly((prev) => ({
           ...prev,
@@ -639,26 +727,241 @@ export default function EvalProgressWorkbench({
         }));
       } catch {
         /* 부가 표시라 실패는 무시 */
+      } finally {
+        if (versionId) setSttVersionBusyId((cur) => (cur === id ? null : cur));
       }
     },
     [org],
   );
+
+  const applyLocalTranscript = useCallback((id: string, transcript: TranscriptSegment[], sttSource: SttSource | null, durationSec?: number | null) => {
+    if (!transcript.length) return;
+    setSttOnly((prev) => ({
+      ...prev,
+      [id]: { segments: transcript, sttSource, durationSec: durationSec ?? null },
+    }));
+    setSamples((prev) =>
+      prev.map((s) =>
+        s.conversationId === id
+          ? { ...s, hasStt: true, sttSource: sttSource ?? s.sttSource ?? "local" }
+          : s,
+      ),
+    );
+  }, []);
+
+  const requestLocalStt = useCallback(
+    async (sample: EvaluationSample, force = false) => {
+      setEvalError(null);
+      try {
+        const r = await fetch("/api/call-quality/stt/local", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversationId: sample.conversationId,
+            force,
+            agentName: sample.adminName,
+            team: sample.team,
+            callDate: sample.callDate,
+            durationSec: sample.callDurationSec,
+          }),
+        });
+        const d = (await r.json()) as { error?: string; job?: LocalSttQueueView };
+        if (!r.ok) throw new Error(d.error ?? "로컬 STT 요청에 실패했습니다");
+        if (d.job) {
+          setQueueById((prev) => ({ ...prev, [d.job!.conversationId]: d.job! }));
+          if (isInFlightSttStatus(d.job.status)) setSttPollNonce((n) => n + 1);
+        }
+      } catch (e) {
+        setEvalError(e instanceof Error ? e.message : "로컬 STT 요청에 실패했습니다");
+      }
+    },
+    [],
+  );
+
+  const runGcpStt = useCallback(
+    async (sample: EvaluationSample) => {
+      if (sttBusyId || evaluatingId) return;
+      const conversationId = sample.conversationId;
+      setSttBusyId(conversationId);
+      setEvalError(null);
+      setProgress({ label: "STT 준비 중", sec: 0, etaSec: null });
+      try {
+        const res = await fetch("/api/call-quality/observe", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversationId, org, force: true }),
+        });
+        if (!res.ok) throw new Error(await describeApiError(res));
+        let transcript: TranscriptSegment[] | null = null;
+        let sttSource: SttSource | null = "gcp";
+        let durationSec: number | null = null;
+        for await (const ev of readNdjson<{
+          type: string;
+          step?: string;
+          elapsedMs?: number;
+          message?: string;
+          result?: { transcript?: TranscriptSegment[]; sttSource?: SttSource | null; durationSec?: number | null };
+        }>(res.body)) {
+          if (ev.type === "progress") {
+            setProgress({
+              label: OBSERVE_STEP_LABEL[ev.step ?? ""] ?? "STT 중",
+              sec: Math.round((ev.elapsedMs ?? 0) / 1000),
+              etaSec: null,
+            });
+          } else if (ev.type === "heartbeat") {
+            setProgress((p) => (p ? { ...p, sec: Math.round((ev.elapsedMs ?? 0) / 1000) } : p));
+          } else if (ev.type === "error") {
+            throw new Error(ev.message ?? "STT에 실패했어요");
+          } else if (ev.type === "result") {
+            transcript = ev.result?.transcript ?? [];
+            sttSource = ev.result?.sttSource ?? "gcp";
+            durationSec = ev.result?.durationSec ?? null;
+          }
+        }
+        if (!transcript?.length) throw new Error("STT 결과가 비어 있어요");
+        applyLocalTranscript(conversationId, transcript, sttSource, durationSec);
+        void loadSttOnly(conversationId);
+      } catch (e) {
+        setEvalError(e instanceof Error ? e.message : "GCP STT에 실패했어요");
+      } finally {
+        setSttBusyId(null);
+        setProgress(null);
+      }
+    },
+    [applyLocalTranscript, evaluatingId, loadSttOnly, org, sttBusyId],
+  );
+
+  const submitSttIssue = useCallback(
+    async (input: { issueType: SttIssueTypeId; comment: string }) => {
+      if (!selectedId) return;
+      const sample = samples.find((s) => s.conversationId === selectedId);
+      setIssueBusy(true);
+      setEvalError(null);
+      try {
+        const r = await fetch("/api/call-quality/stt/issues", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversationId: selectedId,
+            issueType: input.issueType,
+            comment: input.comment,
+            agentName: sample?.adminName,
+            callDate: sample?.callDate,
+            org,
+          }),
+        });
+        const d = (await r.json()) as { error?: string; duplicate?: boolean };
+        if (!r.ok) throw new Error(d.error ?? "리포팅에 실패했습니다");
+        if (d.duplicate) {
+          setEvalError("이 콜은 같은 유형으로 이미 리포트되어 있어요.");
+        }
+        setReportOpen(false);
+      } catch (e) {
+        setEvalError(e instanceof Error ? e.message : "리포팅에 실패했습니다");
+      } finally {
+        setIssueBusy(false);
+      }
+    },
+    [org, samples, selectedId],
+  );
+
+  loadSttOnlyRef.current = loadSttOnly;
+
+  useEffect(() => {
+    if (!selectedId) return;
+    let stop = false;
+    let timer: number | null = null;
+    let fetching = false;
+    let prevStatus: string | null = null;
+
+    const stopTimer = () => {
+      if (timer != null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const tick = async () => {
+      if (stop || fetching || document.hidden) return;
+      fetching = true;
+      try {
+        const q = selectedId ? `?conversationId=${encodeURIComponent(selectedId)}` : "";
+        const r = await fetch(`/api/call-quality/stt/local${q}`);
+        if (!r.ok || stop) return;
+        const d = (await r.json()) as {
+          job?: LocalSttQueueView | null;
+          jobs?: LocalSttQueueView[];
+          health?: { acceptingWork?: boolean | null; reason?: string | null; windowOpen?: boolean | null };
+        };
+        if (stop) return;
+        const next: Record<string, LocalSttQueueView> = {};
+        for (const j of d.jobs ?? []) next[j.conversationId] = j;
+        if (d.job) next[d.job.conversationId] = d.job;
+        setQueueById(next);
+        const selectedJob = selectedId ? (next[selectedId] ?? d.job ?? null) : null;
+        if (selectedJob && isInFlightSttStatus(selectedJob.status) && d.health?.windowOpen === false) {
+          setQueueHint(
+            d.health.reason
+              ? `오프피크가 아니면 창이 열릴 때까지 기다립니다. ${d.health.reason}`
+              : "오프피크 창이 열리면 현재 작업 다음으로 처리됩니다.",
+          );
+        } else {
+          setQueueHint(null);
+        }
+        if (selectedJob && selectedId) {
+          const becameDone = selectedJob.status === "done" && prevStatus != null && prevStatus !== "done";
+          prevStatus = selectedJob.status;
+          if (becameDone) {
+            void loadSttOnlyRef.current(selectedId).then(() => {
+              setSamples((prev) =>
+                prev.map((s) =>
+                  s.conversationId === selectedId ? { ...s, hasStt: true, sttSource: s.sttSource ?? "local" } : s,
+                ),
+              );
+            });
+          }
+        }
+        const anyInFlight = Object.values(next).some((j) => isInFlightSttStatus(j.status));
+        if (anyInFlight) {
+          if (timer == null && !stop) timer = window.setInterval(() => void tick(), STT_QUEUE_POLL_MS);
+        } else {
+          stopTimer();
+        }
+      } catch {
+        /* 상태 표시 실패는 무시 */
+      } finally {
+        fetching = false;
+      }
+    };
+
+    void tick();
+    const onVis = () => {
+      if (document.hidden) stopTimer();
+      else void tick();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop = true;
+      stopTimer();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [selectedId, sttPollNonce]);
 
   const selectCall = useCallback(
     async (id: string) => {
       setSelectedId(id);
       setEvalError(null);
       void loadReviews(id);
-      if (results[id]?.evaluation?.transcript?.length) return;
-      if (!results[id]) {
-        setLoadingResult(true);
-        const r = await fetchResult(id);
-        setLoadingResult(false);
-        if (r?.evaluation?.transcript?.length) return;
-      }
-      if (!sttOnly[id]) void loadSttOnly(id);
+      const needEval = !results[id];
+      const needStt = !sttVersions[id] || !sttOnly[id];
+      if (needEval) setLoadingResult(true);
+      await Promise.all([
+        needEval ? fetchResult(id) : Promise.resolve(null),
+        needStt ? loadSttOnly(id, { versionId: selectedSttVersionId[id] }) : Promise.resolve(),
+      ]);
+      if (needEval) setLoadingResult(false);
     },
-    [fetchResult, loadReviews, loadSttOnly, results, sttOnly],
+    [fetchResult, loadReviews, loadSttOnly, results, selectedSttVersionId, sttOnly, sttVersions],
   );
 
   // 초기 로드 + 딥링크 (conversationId 또는 inquiry_id → 평가 화면에서 해당 통화 선택)
@@ -690,9 +993,7 @@ export default function EvalProgressWorkbench({
         setLoadingResult(true);
         const existing = await fetchResult(prefer);
         setLoadingResult(false);
-        if (!existing?.evaluation?.transcript?.length) {
-          void loadSttOnly(prefer);
-        }
+        void loadSttOnly(prefer);
         if (!existing && deep.autoEval && !autoEvalTried.current) {
           autoEvalTried.current = true;
           const sample = list.find((s) => s.conversationId === prefer);
@@ -718,7 +1019,11 @@ export default function EvalProgressWorkbench({
   }, []);
 
   const applyFilters = (f: SampleFilters) => {
-    const next = defaultFilters?.mineOnly ? { ...f, mineOnly: true } : f;
+    const next = {
+      ...f,
+      ...(defaultFilters?.mineOnly ? { mineOnly: true } : {}),
+      ...(defaultFilters?.reviewRequestedOnly ? { reviewRequestedOnly: true } : {}),
+    };
     setAppliedFilters(next);
     setDraftQuickFilters(quickFilterSlice(next));
     writeFiltersToUrl(next);
@@ -813,12 +1118,20 @@ export default function EvalProgressWorkbench({
   const promptVersionStatus =
     activeMeta?.promptVersionStatus || activeResult?.promptConfig?.version?.status || null;
   const promptBadge = promptVersionBadgeMeta(promptVersionStatus);
-  // AI 평가 전사가 우선, 없으면 저장된 STT(로컬 배치 등)를 보여준다.
+  // STT는 선택한 버전(기본 최신). 아직 안 불러왔으면 평가에 붙은 전사로 폴백.
   const activeSttOnly = selectedId ? sttOnly[selectedId] ?? null : null;
   const evalSegments = activeResult?.evaluation?.transcript ?? [];
-  const segments = evalSegments.length ? evalSegments : activeSttOnly?.segments ?? [];
-  const sttOnlyView = !evalSegments.length && segments.length > 0;
+  const segments = activeSttOnly?.segments?.length ? activeSttOnly.segments : evalSegments;
+  const sttOnlyView = !activeResult;
+  const activeSttVersions = selectedId ? sttVersions[selectedId] ?? [] : [];
+  const activeSttVersionId = selectedId ? selectedSttVersionId[selectedId] ?? null : null;
+  const activeEvalVersions = selectedId ? evalVersions[selectedId] ?? [] : [];
+  const activeEvalVersionId =
+    (selectedId ? selectedEvalVersionId[selectedId] : null) || activeResult?.analysisId || null;
+  const latestEvalVersionId = activeEvalVersions[0]?.analysisId ?? null;
   const isEvaluating = evaluatingId === selectedId;
+  const isGcpStt = sttBusyId === selectedId;
+  const selectedQueue = selectedId ? queueById[selectedId] ?? null : null;
   const done = Boolean(selected?.analyzed || (selectedId && results[selectedId]));
   const reviewDone = Boolean(activeMeta?.reviewCompletedAt);
   const claimedBy = selected?.reviewClaimedBy ?? null;
@@ -960,17 +1273,21 @@ export default function EvalProgressWorkbench({
         <div>
           <div className="text-[11px] font-bold uppercase tracking-wider text-[var(--fg-tertiary)]">평가 진행</div>
           <h1 className="mt-0.5 inline-flex items-center text-[20px] font-extrabold tracking-tight">
-            {defaultFilters?.mineOnly
+            {defaultFilters?.reviewRequestedOnly
+              ? "검수 요청"
+              : defaultFilters?.mineOnly
               ? "내 평가"
               : defaultFilters?.reviewStatus === "incomplete" && defaultFilters?.analyzedOnly
-                ? "수기 평가 필요"
+                ? "미검수건"
                 : defaultFilters?.highRiskOnly
-                  ? "고위험군 평가"
+                  ? "고위험군"
                   : "전체 평가"}
             <CallQualityEvalHelpTip />
           </h1>
           <p className="mt-1 text-[12.5px] text-[var(--fg-secondary)]">
-            {defaultFilters?.mineOnly
+            {defaultFilters?.reviewRequestedOnly
+              ? "수기 검수 대상으로 할당된 공용 레저부어 · 찜하지 않고 누구나 이어서 검수 · 뱃지는 내 할당량 중 남은 건수"
+              : defaultFilters?.mineOnly
               ? "내가 수기 검수를 남겼거나 검수 찜한, 아직 완료되지 않은 케이스 · 찜하면 검수 진행중 · 찜 없이 완료해도 내가 검수한 것으로 기록"
               : defaultFilters?.reviewStatus === "incomplete" && defaultFilters?.analyzedOnly
                 ? "AI 평가가 끝났고 수기 검수가 아직인 콜만 모았어요 · STT에서 검토 필요/최종 Cold·Hot·Hold 검수 후 수기 검수 완료"
@@ -1065,7 +1382,9 @@ export default function EvalProgressWorkbench({
               </div>
             ) : !loadingList && samples.length === 0 ? (
               <p className="px-2 py-8 text-center text-[12px] text-[var(--fg-tertiary)]">
-                {defaultFilters?.mineOnly
+                {defaultFilters?.reviewRequestedOnly
+                  ? "할당된 검수 요청 콜이 없어요"
+                  : defaultFilters?.mineOnly
                   ? "내가 남긴 수기 검수나 검수 찜한 미완료 케이스가 없어요"
                   : "샘플이 없어요"}
               </p>
@@ -1109,27 +1428,50 @@ export default function EvalProgressWorkbench({
                         {s.adminName || "(미상)"}
                         {s.team ? ` (${s.team})` : ""}
                       </span>
-                      {s.hasStt ? (
-                        <Badge
-                          size="medium"
-                          variant="weak"
-                          tone={s.sttSource === "local" ? "brand" : "neutral"}
-                          className="shrink-0"
-                          title={
-                            s.sttSource === "local"
-                              ? "로컬 배치 STT"
-                              : s.sttSource === "gcp"
-                                ? "GCP Speech-to-Text"
-                                : "STT 전사 있음"
-                          }
-                        >
-                          {s.sttSource === "local" ? "로컬 STT" : s.sttSource === "gcp" ? "GCP STT" : "STT"}
-                        </Badge>
-                      ) : (
-                        <Badge size="medium" variant="weak" tone="neutral" className="shrink-0">
-                          STT 없음
-                        </Badge>
-                      )}
+                      {(() => {
+                        const q = queueById[s.conversationId];
+                        if (q && isInFlightSttStatus(q.status)) {
+                          return (
+                            <Badge
+                              size="medium"
+                              variant="weak"
+                              tone="brand"
+                              className="shrink-0"
+                              title={q.stage ?? localSttQueueLabel(q.status)}
+                            >
+                              {q.status === "running"
+                                ? "로컬 전사 중"
+                                : q.status === "pending_upload"
+                                  ? "로컬 업로드"
+                                  : "로컬 대기"}
+                            </Badge>
+                          );
+                        }
+                        if (s.hasStt) {
+                          return (
+                            <Badge
+                              size="medium"
+                              variant="weak"
+                              tone={s.sttSource === "local" ? "brand" : "neutral"}
+                              className="shrink-0"
+                              title={
+                                s.sttSource === "local"
+                                  ? "로컬 배치 STT"
+                                  : s.sttSource === "gcp"
+                                    ? "GCP Speech-to-Text"
+                                    : "STT 전사 있음"
+                              }
+                            >
+                              {s.sttSource === "local" ? "로컬 STT" : s.sttSource === "gcp" ? "GCP STT" : "STT"}
+                            </Badge>
+                          );
+                        }
+                        return (
+                          <Badge size="medium" variant="weak" tone="neutral" className="shrink-0">
+                            STT 없음
+                          </Badge>
+                        );
+                      })()}
                       <CsatRateBadge rate={s.csatRate} className="shrink-0" />
                       {busy && <Loader2 className="h-3 w-3 shrink-0 animate-spin text-[var(--brand)]" />}
                     </div>
@@ -1293,18 +1635,32 @@ export default function EvalProgressWorkbench({
                 observeMode={sttOnlyView}
                 reviews={reviews}
                 onSeek={seekToEvidence}
-                evaluating={isEvaluating}
-                sttSource={activeResult?.sttSource ?? activeSttOnly?.sttSource}
+                evaluating={isEvaluating || isGcpStt}
+                sttSource={activeSttOnly?.sttSource ?? activeResult?.sttSource}
                 progressLabel={
                   progress
                     ? formatProgressWithEta(progress.label, progress.sec, progress.etaSec)
                     : isEvaluating
                       ? "평가 중…"
-                      : null
+                      : isGcpStt
+                        ? "GCP STT 중…"
+                        : null
                 }
                 onSaveReview={saveReview}
                 onDeleteReview={deleteReview}
                 busy={reviewBusy}
+                queue={selectedQueue}
+                queueHint={queueHint}
+                onReportIssue={() => setReportOpen(true)}
+                onReprocess={() => setReprocessOpen(true)}
+                onRequestLocalStt={selected ? () => void requestLocalStt(selected, false) : undefined}
+                localSttBusy={Boolean(selectedQueue && isInFlightSttStatus(selectedQueue.status))}
+                sttVersions={activeSttVersions}
+                selectedSttVersionId={activeSttVersionId}
+                onSelectSttVersion={(versionId) => {
+                  if (selectedId) void loadSttOnly(selectedId, { versionId });
+                }}
+                sttVersionBusy={sttVersionBusyId === selectedId}
               />
             </>
           ) : (
@@ -1317,7 +1673,8 @@ export default function EvalProgressWorkbench({
         {/* 우: AI 결과 */}
         <aside className="qms-run-panel relative sticky top-4 h-full">
           <QmsLoadingOverlay show={loadingResult && !activeResult} label="결과 불러오는 중…" />
-          <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-3 py-3">
+          <div className="border-b border-[var(--border-subtle)] px-3 py-3">
+          <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
               <div className="text-[14px] font-bold">케이스 상세</div>
               <div className="text-[11px] text-[var(--fg-tertiary)]">AI 평가 결과</div>
@@ -1367,6 +1724,30 @@ export default function EvalProgressWorkbench({
                 )}
               </button>
             )}
+          </div>
+              {activeEvalVersions.length > 0 ? (
+                <select
+                  className="qms-select mt-2 !h-8 w-full min-w-0 text-[12px]"
+                  aria-label="AI 평가 버전"
+                  value={
+                    activeEvalVersionId &&
+                    activeEvalVersions.some((v) => v.analysisId === activeEvalVersionId)
+                      ? activeEvalVersionId
+                      : (latestEvalVersionId ?? "")
+                  }
+                  disabled={loadingResult || !!evaluatingId || activeEvalVersions.length < 2}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (next) void selectEvalVersion(next);
+                  }}
+                >
+                  {activeEvalVersions.map((v) => (
+                    <option key={v.analysisId} value={v.analysisId}>
+                      {evalVersionLabel(v, latestEvalVersionId)}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
           </div>
           {selected && done && (
             <div className="space-y-1.5 border-b border-[var(--border-subtle)] bg-[var(--bg-muted)] px-3 py-3">
@@ -1536,11 +1917,20 @@ export default function EvalProgressWorkbench({
                 <button
                   type="button"
                   className="qms-btn-primary"
-                  disabled={!!evaluatingId}
+                  disabled={!!evaluatingId || !!sttBusyId}
                   onClick={() => void evaluate(selected)}
                 >
                   <Sparkles className="mr-1.5 inline h-4 w-4" />
                   지금 평가 실행
+                </button>
+                <button
+                  type="button"
+                  className="qms-btn-ghost"
+                  disabled={!!evaluatingId || !!sttBusyId || Boolean(selectedQueue && isInFlightSttStatus(selectedQueue.status))}
+                  onClick={() => void requestLocalStt(selected, false)}
+                >
+                  <Server className="mr-1.5 inline h-4 w-4" />
+                  로컬 STT 요청
                 </button>
               </div>
             ) : (
@@ -1563,6 +1953,23 @@ export default function EvalProgressWorkbench({
           )}
         </aside>
       </div>
+      <SttReprocessDialog
+        open={reprocessOpen}
+        busy={Boolean(sttBusyId)}
+        onClose={() => setReprocessOpen(false)}
+        onChoose={(target: SttReprocessTarget) => {
+          if (!selected) return;
+          setReprocessOpen(false);
+          if (target === "gcp") void runGcpStt(selected);
+          else void requestLocalStt(selected, true);
+        }}
+      />
+      <SttIssueReportDialog
+        open={reportOpen}
+        busy={issueBusy}
+        onClose={() => setReportOpen(false)}
+        onSubmit={submitSttIssue}
+      />
     </div>
   );
 }

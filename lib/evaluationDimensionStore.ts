@@ -3,7 +3,8 @@ import { growthBq, promptBq } from "./bqRefs";
 import type { ChecklistResult } from "./types";
 import type { CsCriterion } from "./csChecklist";
 import type { EvalCriterionBinding } from "./promptTypes";
-import { cached } from "./serverCache";
+import { cached, cacheInvalidate } from "./serverCache";
+import { servingQuery, withServingTx } from "./servingDb";
 
 /**
  * 평가 실행 결과에서 반복되던 기준 정의를 차원 테이블로 분리한다.
@@ -11,77 +12,11 @@ import { cached } from "./serverCache";
  * - eval_set_criteria: 평가셋(version_id)과 기준/기준 프롬프트의 연결
  * - evaluation_criterion_results: 평가 실행 1건에서 기준별로 나온 판정
  *
- * BigQuery에는 FK 제약이 없으므로 id 연결은 애플리케이션에서 보장한다.
- * 기존 JSON 컬럼은 하위 호환을 위해 당분간 유지하고, 신규 데이터는 이 테이블에도 기록한다.
+ * 평가셋 연결의 원천은 서빙 Postgres(serving_eval_sets)이고 BQ 로는 야간 덤프가 내보낸다.
+ * 기준별 판정 테이블은 더 쓰지 않는다. 결과 JSON 에 체크리스트가 없는 옛 결과만 BQ 에서 읽는다.
  */
 
 const loc = () => (growthBq.location ? { location: growthBq.location } : {});
-
-const evalSetCriteriaTable = () =>
-  getBQ().dataset(growthBq.dataset, { projectId: growthBq.projectId }).table(growthBq.evalSetCriteria);
-
-const evalCriterionResultsTable = () =>
-  getBQ().dataset(growthBq.dataset, { projectId: growthBq.projectId }).table(growthBq.evalCriterionResults);
-
-const EVAL_SET_CRITERIA_SCHEMA = [
-  { name: "eval_set_id", type: "STRING", mode: "REQUIRED" },
-  { name: "criterion_id", type: "INTEGER", mode: "REQUIRED" },
-  { name: "criterion_prompt_id", type: "STRING", mode: "NULLABLE" },
-  { name: "sort_order", type: "INTEGER", mode: "NULLABLE" },
-  { name: "enabled", type: "BOOLEAN", mode: "REQUIRED" },
-  { name: "created_at", type: "TIMESTAMP", mode: "REQUIRED" },
-] as const;
-
-const EVAL_CRITERION_RESULTS_SCHEMA = [
-  { name: "analysis_id", type: "STRING", mode: "REQUIRED" },
-  { name: "eval_set_id", type: "STRING", mode: "NULLABLE" },
-  { name: "criterion_id", type: "INTEGER", mode: "REQUIRED" },
-  { name: "criterion_prompt_id", type: "STRING", mode: "NULLABLE" },
-  { name: "violated", type: "BOOLEAN", mode: "NULLABLE" },
-  { name: "reason", type: "STRING", mode: "NULLABLE" },
-  { name: "evidence_json", type: "STRING", mode: "NULLABLE" },
-  { name: "created_at", type: "TIMESTAMP", mode: "REQUIRED" },
-] as const;
-
-const isAlreadyExists = (e: unknown) =>
-  (e as { code?: number })?.code === 409 ||
-  /already exists/i.test(e instanceof Error ? e.message : String(e));
-
-let _ensured: Promise<void> | null = null;
-
-export function ensureEvaluationDimensionTables(): Promise<void> {
-  if (!_ensured) {
-    _ensured = (async () => {
-      const bq = getBQ();
-      const ds = bq.dataset(growthBq.dataset, { projectId: growthBq.projectId });
-      const [dsExists] = await ds.exists();
-      if (!dsExists) {
-        await ds.create({ location: growthBq.location ?? "US" }).catch((e) => {
-          if (!isAlreadyExists(e)) throw e;
-        });
-      }
-
-      for (const [name, schema] of [
-        [growthBq.evalSetCriteria, EVAL_SET_CRITERIA_SCHEMA],
-        [growthBq.evalCriterionResults, EVAL_CRITERION_RESULTS_SCHEMA],
-      ] as const) {
-        const table = ds.table(name);
-        const [exists] = await table.exists();
-        if (!exists) {
-          await table
-            .create({ schema: schema as unknown as { name: string; type: string; mode: string }[] })
-            .catch((e) => {
-              if (!isAlreadyExists(e)) throw e;
-            });
-        }
-      }
-    })().catch((e) => {
-      _ensured = null;
-      throw e;
-    });
-  }
-  return _ensured;
-}
 
 export async function syncEvalSetCriteria(input: {
   evalSetId: string;
@@ -89,61 +24,31 @@ export async function syncEvalSetCriteria(input: {
 }): Promise<void> {
   const evalSetId = input.evalSetId.trim();
   if (!evalSetId) return;
-  await ensureEvaluationDimensionTables();
 
   const bindings = input.bindings.filter((b) => Number.isFinite(b.criterionId));
-  if (!bindings.length) return;
-
-  // 평가셋 version_id는 immutable하지만 재시도 시 중복을 만들지 않도록 교체한다.
-  await getBQ().query({
-    query: `
-      delete from ${growthBq.resultsSql(growthBq.evalSetCriteria)}
-      where eval_set_id = @eval_set_id
-    `,
-    params: { eval_set_id: evalSetId },
-    ...loc(),
+  await withServingTx(async (client) => {
+    await client.query(`delete from serving_eval_sets where eval_set_id = $1`, [evalSetId]);
+    // 연결을 전부 지우면 exported_at 으로 남는 행이 없어 덤프가 BQ 쪽 삭제를 모른다.
+    await client.query(
+      `
+      insert into serving_export_dirty (kind, key) values ('eval_set', $1)
+      on conflict (kind, key) do update set marked_at = now()
+      `,
+      [evalSetId],
+    );
+    for (let i = 0; i < bindings.length; i++) {
+      const b = bindings[i];
+      await client.query(
+        `
+        insert into serving_eval_sets
+          (eval_set_id, criterion_id, criterion_prompt_id, sort_order, enabled, created_at, exported_at)
+        values ($1, $2, $3, $4, $5, now(), null)
+        `,
+        [evalSetId, b.criterionId, b.promptId?.trim() || null, i + 1, b.enabled !== false],
+      );
+    }
   });
-
-  const createdAt = new Date().toISOString();
-  await evalSetCriteriaTable().insert(
-    bindings.map((b, index) => ({
-      eval_set_id: evalSetId,
-      criterion_id: b.criterionId,
-      criterion_prompt_id: b.promptId?.trim() || null,
-      sort_order: index + 1,
-      enabled: b.enabled !== false,
-      created_at: createdAt,
-    })),
-    { skipInvalidRows: false, ignoreUnknownValues: false },
-  );
-}
-
-export async function saveEvaluationCriterionResults(input: {
-  analysisId: string;
-  evalSetId?: string | null;
-  bindings?: EvalCriterionBinding[];
-  checklist: ChecklistResult[];
-  createdAt: string;
-}): Promise<void> {
-  if (!input.analysisId.trim() || !input.checklist.length) return;
-  await ensureEvaluationDimensionTables();
-
-  const promptIdByCriterion = new Map(
-    (input.bindings ?? []).map((b) => [b.criterionId, b.promptId?.trim() || null]),
-  );
-  await evalCriterionResultsTable().insert(
-    input.checklist.map((c) => ({
-      analysis_id: input.analysisId,
-      eval_set_id: input.evalSetId?.trim() || null,
-      criterion_id: c.id,
-      criterion_prompt_id: promptIdByCriterion.get(c.id) ?? null,
-      violated: c.violated,
-      reason: c.reason ?? null,
-      evidence_json: JSON.stringify(c.evidence ?? []),
-      created_at: input.createdAt,
-    })),
-    { skipInvalidRows: false, ignoreUnknownValues: false },
-  );
+  cacheInvalidate(`eval-set-criteria:${evalSetId}`);
 }
 
 export async function loadEvaluationCriterionResults(analysisId: string): Promise<ChecklistResult[] | null> {
@@ -196,56 +101,57 @@ export function loadEvalSetCriteria(evalSetId: string): Promise<CsCriterion[] | 
 
 async function loadEvalSetCriteriaUncached(id: string): Promise<CsCriterion[] | null> {
   try {
-    const [rows] = await getBQ().query({
-      query: `
-        select
-          esc.criterion_id,
-          esc.sort_order,
-          coalesce(selected_cp.category, latest_cp.category) as category,
-          coalesce(selected_cp.label, latest_cp.label) as label,
-          coalesce(selected_cp.fields_json, latest_cp.fields_json) as fields_json
-        from ${growthBq.resultsSql(growthBq.evalSetCriteria)} esc
-        left join ${promptBq.sql(promptBq.tables.criterionPrompts)} selected_cp
-          on selected_cp.prompt_id = esc.criterion_prompt_id
-        left join (
-          select prompt_id, criterion_id, category, label, fields_json
-          from ${promptBq.sql(promptBq.tables.criterionPrompts)}
-          qualify row_number() over (partition by criterion_id order by updated_at desc) = 1
-        ) latest_cp
-          on esc.criterion_prompt_id is null
-         and latest_cp.criterion_id = esc.criterion_id
-        where esc.eval_set_id = @eval_set_id
-          and esc.enabled = true
-        qualify row_number() over (
-          partition by esc.criterion_id
-          order by esc.sort_order
-        ) = 1
-        order by esc.sort_order, esc.criterion_id
+    const links = await servingQuery<{
+      criterion_id: number;
+      criterion_prompt_id: string | null;
+    }>(
+      `
+      select criterion_id, criterion_prompt_id
+      from serving_eval_sets
+      where eval_set_id = $1 and enabled
+      order by sort_order, criterion_id
       `,
-      params: { eval_set_id: id },
-      ...loc(),
-    });
-    if (!rows.length) return null;
-
-    return (rows as Record<string, unknown>[]).map((r) => {
+      [id],
+    );
+    if (!links.length) return null;
+    const promptIds = [...new Set(links.map((r) => r.criterion_prompt_id).filter((v): v is string => Boolean(v)))];
+    const prompts = new Map<string, { category: string; label: string; fields_json: string }>();
+    if (promptIds.length) {
+      const rows = await servingQuery<Record<string, unknown>>(
+        `
+          select prompt_id, category, label, fields_json
+          from ${promptBq.tables.criterionPrompts}
+          where prompt_id = any($1::text[])
+        `,
+        [promptIds],
+      );
+      for (const r of rows) {
+        prompts.set(String(r.prompt_id), {
+          category: String(r.category ?? ""),
+          label: String(r.label ?? ""),
+          fields_json: String(r.fields_json ?? "{}"),
+        });
+      }
+    }
+    return links.map((link) => {
+      const prompt = link.criterion_prompt_id ? prompts.get(link.criterion_prompt_id) : undefined;
       let fields: Record<string, string> = {};
       try {
-        const parsed = JSON.parse(String(r.fields_json ?? "{}")) as Record<string, unknown>;
+        const parsed = JSON.parse(prompt?.fields_json ?? "{}") as Record<string, unknown>;
         fields = Object.fromEntries(Object.entries(parsed).map(([k, v]) => [k, String(v ?? "")]));
       } catch {
         fields = {};
       }
       const hint = fields.definition ?? "";
       return {
-        id: Number(r.criterion_id),
-        category: String(r.category ?? ""),
-        label: String(r.label ?? "") || `평가 ${String(r.criterion_id)}`,
+        id: Number(link.criterion_id),
+        category: prompt?.category ?? "",
+        label: prompt?.label || `평가 ${String(link.criterion_id)}`,
         hint,
         fields,
       };
     });
   } catch (e) {
-    // 신규 테이블이 배포되지 않은 환경/legacy 결과는 기존 경로로 복구한다.
     console.warn("[evaluationDimensionStore] load eval-set criteria fallback:", e instanceof Error ? e.message : e);
     return null;
   }

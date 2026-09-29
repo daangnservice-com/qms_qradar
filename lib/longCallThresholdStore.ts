@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { getBQ } from "./bigquery";
 import { growthBq, promptBq } from "./bqRefs";
-import { addColumnsIfMissing } from "./bqSchema";
+import {
+  CASES_CALL_DATE_KST,
+  CASES_CID,
+  CASES_DURATION_SEC,
+  CASES_SINCE,
+} from "./evaluationCasesSql";
+import { servingRows } from "./servingDb";
 import { addDaysYmd, currentDateKst } from "./sttBatchKst";
 import { cached, cacheInvalidate, SERVER_CACHE_TTL } from "./serverCache";
 import {
@@ -12,71 +18,11 @@ import {
   type LongCallThresholdSnapshot,
 } from "./longCallThreshold";
 
+// 장콜 임계값 스냅샷. 계산은 하루 한 번 BQ 콜 원천에서, 저장·조회는 서빙 Postgres
+// (테이블 이름은 BQ 와 같다, BQ 는 야간 덤프 사본).
 const TABLE = promptBq.tables.longCallThresholds;
-const loc = () => (promptBq.location ? { location: promptBq.location } : {});
-const sql = () => promptBq.sql(TABLE);
-const tableRef = () =>
-  getBQ().dataset(promptBq.dataset, { projectId: promptBq.projectId }).table(TABLE);
-
-const SCHEMA = [
-  { name: "snapshot_id", type: "STRING", mode: "REQUIRED" },
-  { name: "rule_key", type: "STRING", mode: "REQUIRED" },
-  { name: "percentile", type: "FLOAT", mode: "REQUIRED" },
-  { name: "window_days", type: "INTEGER", mode: "REQUIRED" },
-  { name: "window_start", type: "DATE", mode: "REQUIRED" },
-  { name: "window_end", type: "DATE", mode: "REQUIRED" },
-  { name: "threshold_minutes", type: "FLOAT", mode: "REQUIRED" },
-  { name: "daily_json", type: "STRING", mode: "NULLABLE" },
-  { name: "as_of_date", type: "DATE", mode: "REQUIRED" },
-  { name: "computed_at", type: "TIMESTAMP", mode: "REQUIRED" },
-] as const;
-
-const isAlreadyExists = (e: unknown) =>
-  (e as { code?: number })?.code === 409 || /already exists/i.test(e instanceof Error ? e.message : String(e));
-
-let _ensured: Promise<void> | null = null;
-
-export function ensureLongCallThresholdTable(): Promise<void> {
-  if (!_ensured) {
-    _ensured = (async () => {
-      const bq = getBQ();
-      const ds = bq.dataset(promptBq.dataset, { projectId: promptBq.projectId });
-      const [dsExists] = await ds.exists();
-      if (!dsExists) {
-        await ds.create({ location: promptBq.location ?? "US" }).catch((e) => {
-          if (!isAlreadyExists(e)) throw e;
-        });
-      }
-      const t = tableRef();
-      const [exists] = await t.exists();
-      if (!exists) {
-        await t
-          .create({ schema: SCHEMA as unknown as { name: string; type: string; mode: string }[] })
-          .catch((e) => {
-            if (!isAlreadyExists(e)) throw e;
-          });
-      } else {
-        await addColumnsIfMissing(t, [...SCHEMA], { location: promptBq.location, logTag: "longCallThresholdStore" });
-      }
-    })().catch((e) => {
-      _ensured = null;
-      throw e;
-    });
-  }
-  return _ensured;
-}
 
 const CASES_SQL = growthBq.casesSql();
-const CID = "json_value(case_content, '$.genesys_conversation_id')";
-const CALL_START_TS = "safe_cast(json_value(case_content, '$.call_start') as timestamp)";
-const CALL_DATE_KST = `format_date('%F', date(${CALL_START_TS}, 'Asia/Seoul'))`;
-const CALL_END_TS = "safe_cast(json_value(case_content, '$.call_end') as timestamp)";
-const MINUTES = "safe_cast(json_value(case_content, '$.minutes_taken') as float64)";
-const DURATION_SEC = `coalesce(
-  if(timestamp_diff(${CALL_END_TS}, ${CALL_START_TS}, second) > 0,
-     timestamp_diff(${CALL_END_TS}, ${CALL_START_TS}, second), null),
-  if(${MINUTES} > 0, cast(round(${MINUTES} * 60) as int64), null)
-)`;
 
 function cacheKey(percentile: number, windowDays: number, ruleKey: string): string {
   return `long-call-threshold:${ruleKey}:${percentile}:${windowDays}`;
@@ -126,27 +72,24 @@ export async function loadLatestLongCallThreshold(opts: {
   windowDays?: number;
   ruleKey?: string;
 }): Promise<LongCallThresholdSnapshot | null> {
-  await ensureLongCallThresholdTable();
   const percentile = clampLongCallPercentile(opts.percentile);
   const windowDays = opts.windowDays ?? LONG_CALL_THRESHOLD_WINDOW_DAYS;
   const ruleKey = (opts.ruleKey ?? "long_call").trim() || "long_call";
   try {
-    const [rows] = await getBQ().query({
-      query: `
+    const rows = await servingRows(
+      `
         select snapshot_id, rule_key, percentile, window_days, window_start, window_end,
                threshold_minutes, daily_json, as_of_date, computed_at
-        from ${sql()}
+        from ${TABLE}
         where rule_key = @rule_key
-          and percentile = @percentile
-          and window_days = @window_days
+          and percentile = @percentile::float8
+          and window_days = @window_days::bigint
         order by computed_at desc
         limit 1
       `,
-      params: { rule_key: ruleKey, percentile, window_days: windowDays },
-      types: { rule_key: "STRING", percentile: "FLOAT64", window_days: "INT64" },
-      ...loc(),
-    });
-    const row = (rows as Record<string, unknown>[])[0];
+      { rule_key: ruleKey, percentile, window_days: windowDays },
+    );
+    const row = rows[0];
     return row ? rowToSnapshot(row) : null;
   } catch (e) {
     console.error("[longCallThresholdStore] loadLatest:", e);
@@ -174,14 +117,14 @@ export async function computeLongCallThresholdFromCases(opts: {
   const query = `
     with base as (
       select
-        ${CALL_DATE_KST} as call_date,
-        ${DURATION_SEC} as duration_sec
+        ${CASES_CALL_DATE_KST} as call_date,
+        ${CASES_DURATION_SEC} as duration_sec
       from ${CASES_SQL}
-      where year_month >= '2026-04-01'
-        and ${CID} is not null
-        and ${DURATION_SEC} is not null
-        and ${CALL_DATE_KST} between @window_start and @window_end
-      qualify row_number() over (partition by ${CID} order by inquiry_created_at_kst desc) = 1
+      where ${CASES_SINCE}
+        and ${CASES_CID} is not null
+        and ${CASES_DURATION_SEC} is not null
+        and ${CASES_CALL_DATE_KST} between DATE(@window_start) and DATE(@window_end)
+      qualify row_number() over (partition by ${CASES_CID} order by inquiry_created_at_kst desc) = 1
     ),
     daily as (
       select
@@ -246,18 +189,17 @@ export async function computeLongCallThresholdFromCases(opts: {
 }
 
 async function insertSnapshot(snap: LongCallThresholdSnapshot): Promise<void> {
-  await ensureLongCallThresholdTable();
-  await getBQ().query({
-    query: `
-      insert into ${sql()} (
+  await servingRows(
+    `
+      insert into ${TABLE} (
         snapshot_id, rule_key, percentile, window_days, window_start, window_end,
         threshold_minutes, daily_json, as_of_date, computed_at
       ) values (
-        @snapshot_id, @rule_key, @percentile, @window_days, date(@window_start), date(@window_end),
-        @threshold_minutes, @daily_json, date(@as_of_date), timestamp(@computed_at)
+        @snapshot_id, @rule_key, @percentile, @window_days, @window_start::date, @window_end::date,
+        @threshold_minutes, @daily_json, @as_of_date::date, @computed_at::timestamptz
       )
     `,
-    params: {
+    {
       snapshot_id: snap.snapshotId,
       rule_key: snap.ruleKey,
       percentile: snap.percentile,
@@ -269,20 +211,7 @@ async function insertSnapshot(snap: LongCallThresholdSnapshot): Promise<void> {
       as_of_date: snap.asOfDate,
       computed_at: snap.computedAt,
     },
-    types: {
-      snapshot_id: "STRING",
-      rule_key: "STRING",
-      percentile: "FLOAT64",
-      window_days: "INT64",
-      window_start: "STRING",
-      window_end: "STRING",
-      threshold_minutes: "FLOAT64",
-      daily_json: "STRING",
-      as_of_date: "STRING",
-      computed_at: "STRING",
-    },
-    ...loc(),
-  });
+  );
 }
 
 /**

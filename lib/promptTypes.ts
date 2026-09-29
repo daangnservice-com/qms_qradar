@@ -167,6 +167,8 @@ export interface EvalCriterionBinding {
 }
 
 export interface PromptVersion {
+  /** Migration-only frozen compatibility snapshot. Never accepted from save requests. */
+  legacyChannelSnapshotJson?: string;
   versionId: string;
   templateKey: PromptTemplateKey;
   versionLabel: string;
@@ -179,7 +181,7 @@ export interface PromptVersion {
   /** 평가셋: 기준×프롬프트 버전 바인딩 */
   criterionBindings: EvalCriterionBinding[];
   outputSchemaConfig: OutputSchemaConfig;
-  /** LLM 결과 → cold/hot 등 파싱 */
+  /** 1차 문제 후보 → 검토 필요/불필요. 최종 Cold/Hot과 독립. */
   resultParseConfig: ResultParseConfig;
   /** 오디오·신호 분석 파이프라인 */
   audioPipelineConfig: AudioPipelineConfig;
@@ -202,6 +204,8 @@ export interface SourceCriterion {
 
 /** 항목별 프롬프트 버전 (기준 1 : 프롬프트 N) */
 export interface CriterionPrompt {
+  /** Immutable per prompt version; missing historical metadata means phone only. */
+  exposureChannels?: import('./evaluationChannel').EvaluationChannel[];
   promptId: string;
   criterionId: number;
   versionLabel: string;

@@ -1,43 +1,43 @@
 import type { Session } from "next-auth";
-import { canAccessCallQuality, canAccessPayCallQuality } from "./adminEmails";
-import type { CallQualityOrg } from "./callQualityOrg";
+import { canAccessEvalProgress, canAccessMonthlyReport, canAccessQualityEval } from "./adminEmails";
 
 export type AccessSession = {
   user?: { email?: string | null } | null;
-  access?: { callQuality?: boolean } | null;
+  access?: {
+    qualityEval?: boolean;
+    monthlyReport?: boolean;
+  } | null;
 } | null;
 
-/** 클라이언트(Sidebar)용 — JWT 플래그 또는 개인 화이트리스트. */
-export function sessionCanAccessCallQuality(session: AccessSession | Session | undefined): boolean {
-  if (!session?.user?.email) return false;
-  if (session.access?.callQuality) return true;
-  return canAccessCallQuality(session.user.email);
+function emailOf(session: AccessSession | Session | undefined): string | null {
+  return session?.user?.email ?? null;
 }
 
-export function sessionCanAccessPayCallQuality(session: AccessSession | Session | undefined): boolean {
-  return canAccessPayCallQuality(session?.user?.email);
+function flags(session: AccessSession | Session | undefined) {
+  return session?.access ?? null;
 }
 
-export function sessionCanAccessAnyCallQuality(session: AccessSession | Session | undefined): boolean {
-  return sessionCanAccessCallQuality(session) || sessionCanAccessPayCallQuality(session);
-}
-
-export function sessionCanAccessCallQualityObserve(
+/** 평가 설계·품질평가(리포트). */
+export function sessionCanAccessQualityEval(
   session: AccessSession | Session | undefined,
 ): boolean {
-  return sessionCanAccessAnyCallQuality(session);
+  if (!emailOf(session)) return false;
+  if (flags(session)?.qualityEval) return true;
+  return canAccessQualityEval(emailOf(session));
 }
 
-export function sessionCanAccessOrg(
-  org: CallQualityOrg,
+/** 품질평가 > 월간 리포트. */
+export function sessionCanAccessMonthlyReport(
   session: AccessSession | Session | undefined,
 ): boolean {
-  return org === "pay" ? sessionCanAccessPayCallQuality(session) : sessionCanAccessCallQuality(session);
+  if (!emailOf(session)) return false;
+  if (flags(session)?.monthlyReport || flags(session)?.qualityEval) return true;
+  return canAccessMonthlyReport(emailOf(session));
 }
 
-export function sessionCanAccessCallQualityPlayback(
-  org: CallQualityOrg,
+/** 평가 진행(콜·인앱문의·채팅상담) — 도메인 구성원 전체. */
+export function sessionCanAccessEvalProgress(
   session: AccessSession | Session | undefined,
 ): boolean {
-  return sessionCanAccessOrg(org, session) || sessionCanAccessCallQualityObserve(session);
+  return canAccessEvalProgress(emailOf(session));
 }

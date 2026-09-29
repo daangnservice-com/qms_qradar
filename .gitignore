@@ -18,6 +18,7 @@ next-env.d.ts
 !.env.local.example
 env.download
 *.download
+/sa/
 
 # debug logs
 *-debug.log

@@ -1,5 +1,6 @@
-import { getBQ } from "./bigquery";
-import { distBq } from "./bqRefs";
+// 슬랙 사용자 사본(평가자 이메일 매핑용). 원천은 서빙 Postgres(테이블 이름은 BQ 와 같다), BQ 는 야간 덤프 사본.
+import { insertDistRows } from "./distDb";
+import { servingRows, withServingTx } from "./servingDb";
 
 export type SlackUserRow = {
   slackUserId: string;
@@ -12,42 +13,6 @@ export type SlackUserRow = {
 };
 
 const TABLE = "qradar_slack_users";
-
-const SCHEMA = [
-  { name: "slack_user_id", type: "STRING", mode: "REQUIRED" },
-  { name: "email", type: "STRING", mode: "NULLABLE" },
-  { name: "display_name", type: "STRING", mode: "NULLABLE" },
-  { name: "real_name", type: "STRING", mode: "NULLABLE" },
-  { name: "is_bot", type: "BOOL", mode: "NULLABLE" },
-  { name: "deleted", type: "BOOL", mode: "NULLABLE" },
-  { name: "synced_at", type: "TIMESTAMP", mode: "NULLABLE" },
-] as const;
-
-const loc = () => (distBq.location ? { location: distBq.location } : {});
-
-let ensured: Promise<void> | null = null;
-
-async function ensureSlackUsersTable(): Promise<void> {
-  if (!ensured) {
-    ensured = (async () => {
-      const bq = getBQ();
-      const ds = bq.dataset(distBq.dataset, { projectId: distBq.projectId });
-      const [dsOk] = await ds.exists();
-      if (!dsOk) await ds.create({ location: distBq.location || undefined });
-      const table = ds.table(TABLE);
-      const [tOk] = await table.exists();
-      if (!tOk) {
-        await table.create({
-          schema: SCHEMA as unknown as { name: string; type: string; mode: string }[],
-        });
-      }
-    })().catch((e) => {
-      ensured = null;
-      throw e;
-    });
-  }
-  return ensured;
-}
 
 function cellStr(v: unknown): string {
   if (v == null) return "";
@@ -113,7 +78,6 @@ async function fetchSlackMembers(): Promise<SlackApiMember[]> {
 }
 
 export async function syncSlackUsers(): Promise<{ count: number; syncedAt: string }> {
-  await ensureSlackUsersTable();
   const members = await fetchSlackMembers();
   const syncedAt = new Date().toISOString();
   const rows = members
@@ -128,25 +92,18 @@ export async function syncSlackUsers(): Promise<{ count: number; syncedAt: strin
       synced_at: syncedAt,
     }));
 
-  const bq = getBQ();
-  const fq = distBq.fq(TABLE);
-  await bq.query({ query: `DELETE FROM ${fq} WHERE TRUE`, ...loc() });
-  if (rows.length) {
-    await bq.dataset(distBq.dataset, { projectId: distBq.projectId }).table(TABLE).insert(rows, {
-      skipInvalidRows: true,
-      ignoreUnknownValues: true,
-    });
-  }
+  await withServingTx(async (client) => {
+    await client.query(`DELETE FROM ${TABLE}`);
+    await insertDistRows(TABLE, rows, client);
+  });
   return { count: rows.filter((r) => r.email && !r.deleted && !r.is_bot).length, syncedAt };
 }
 
 export async function listSlackUsers(opts?: { includeBots?: boolean; includeDeleted?: boolean }): Promise<SlackUserRow[]> {
-  await ensureSlackUsersTable();
-  const [rows] = await getBQ().query({
-    query: `SELECT * FROM ${distBq.fq(TABLE)} ORDER BY display_name, email`,
-    ...loc(),
-  });
-  let list = (rows as Record<string, unknown>[]).map(parseRow);
+  const rows = await servingRows(
+    `SELECT * FROM ${TABLE} ORDER BY display_name COLLATE "C" NULLS FIRST, email COLLATE "C" NULLS FIRST`,
+  );
+  let list = rows.map(parseRow);
   if (!opts?.includeBots) list = list.filter((u) => !u.isBot);
   if (!opts?.includeDeleted) list = list.filter((u) => !u.deleted);
   return list;

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const query = vi.fn();
-vi.mock("./bigquery", () => ({ getBQ: () => ({ query }) }));
+const { query } = vi.hoisted(() => ({ query: vi.fn() }));
+vi.mock("./servingDb", () => ({ servingQuery: query }));
 
 import { CS_CHECKLIST, buildChecklistPromptBlock, type CsCriterion } from "./csChecklist";
 import { clearCsChecklistCache, loadCsChecklist } from "./csChecklistLoad";
@@ -36,17 +36,15 @@ describe("buildChecklistPromptBlock", () => {
 });
 
 describe("loadCsChecklist", () => {
-  it("BQ 조회 실패 시 하드코딩 폴백을 반환한다", async () => {
+  it("기준 사본 조회 실패 시 하드코딩 폴백을 반환한다", async () => {
     query.mockRejectedValue(new Error("no access"));
     const list = await loadCsChecklist();
     expect(list).toBe(CS_CHECKLIST);
     expect(query).toHaveBeenCalled();
   });
 
-  it("BQ 행이 있으면 그 기준으로 반환한다", async () => {
-    query.mockResolvedValue([
-      [{ id: 407, category: "예절과 화법", label: "인사 누락", hint: "h" }],
-    ]);
+  it("기준 사본에 행이 있으면 그 기준으로 반환한다", async () => {
+    query.mockResolvedValue([{ id: 407, category: "예절과 화법", label: "인사 누락", hint: "h" }]);
     const list = await loadCsChecklist();
     expect(list).toEqual([{ id: 407, category: "예절과 화법", label: "인사 누락", hint: "h" }]);
   });

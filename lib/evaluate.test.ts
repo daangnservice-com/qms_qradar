@@ -41,6 +41,7 @@ vi.mock("./highRiskFlagStore", () => ({
 }));
 vi.mock("./promptStore", () => ({
   getProductionPrompt: vi.fn(async () => makePromptConfig()),
+  validatePromptVersionChannels: vi.fn().mockResolvedValue(null),
 }));
 
 import { runSilenceDetection, runOverlapDetection, computeSpeechOverlaps, computeSpeechGaps } from "./silence";

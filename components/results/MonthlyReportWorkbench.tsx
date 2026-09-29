@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PrefixIcon, Text } from "@seed-design/react";
 import IconArrow2ClockwiseCircularLine from "@karrotmarket/react-monochrome-icon/IconArrow2ClockwiseCircularLine";
-import { Printer } from "lucide-react";
+import { ChevronDown, Printer } from "lucide-react";
 import { ActionButton } from "seed-design/ui/action-button";
 import { Callout } from "seed-design/ui/callout";
 import { ChipTabsList, ChipTabsRoot, ChipTabsTrigger } from "seed-design/ui/chip-tabs";
@@ -43,7 +43,7 @@ function tierColor(hotRate: number): string {
 
 function Panel({ title, sub, children }: { title: string; sub?: string; children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[var(--radius-xl,16px)] border border-[var(--border-subtle)] bg-[var(--bg-canvas)] shadow-[var(--shadow-1,0_1px_2px_rgba(0,0,0,.04))] print:break-inside-avoid">
+    <div className="overflow-visible rounded-[var(--radius-xl,16px)] border border-[var(--border-subtle)] bg-[var(--bg-canvas)] shadow-[var(--shadow-1,0_1px_2px_rgba(0,0,0,.04))] print:break-inside-avoid">
       <div className="flex flex-wrap items-baseline gap-2 px-[18px] pb-2 pt-[15px]">
         <div className="text-[15px] font-bold text-[var(--fg-primary)]">{title}</div>
         {sub ? <span className="text-[12px] text-[var(--fg-tertiary)]">{sub}</span> : null}
@@ -55,6 +55,211 @@ function Panel({ title, sub, children }: { title: string; sub?: string; children
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <p className="py-6 text-center text-[13px] text-[var(--fg-tertiary)]">{children}</p>;
+}
+
+function CollapsibleSection({
+  title,
+  defaultOpen = true,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="overflow-hidden rounded-[14px] border border-[var(--border-subtle)] bg-[var(--bg-canvas)]">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left"
+      >
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-[var(--fg-tertiary)] transition-transform ${open ? "" : "-rotate-90"}`}
+        />
+        <span className="text-[14px] font-bold text-[var(--fg-primary)]">{title}</span>
+      </button>
+      {open ? <div className="border-t border-[var(--border-subtle)] px-4 py-3">{children}</div> : null}
+    </section>
+  );
+}
+
+function renderInlineMd(text: string, keyBase: string): React.ReactNode {
+  const nodes: React.ReactNode[] = [];
+  const re = /\*\*(.+?)\*\*/g;
+  let last = 0;
+  let i = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    nodes.push(
+      <strong key={`${keyBase}-b${i++}`} className="font-bold">
+        {m[1]}
+      </strong>,
+    );
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes.length ? nodes : text;
+}
+
+function isMdTableSep(line: string): boolean {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line.trim());
+}
+
+function splitMdRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|")) s = s.slice(0, -1);
+  return s.split("|").map((c) => c.trim());
+}
+
+function ReportMarkdownPreview({ text }: { text: string }) {
+  const raw = text.trim();
+  if (!raw) {
+    return <p className="py-6 text-center text-[13px] text-[var(--fg-tertiary)]">미리볼 내용이 없어요.</p>;
+  }
+
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const blocks: React.ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+
+    if (line.startsWith("■")) {
+      blocks.push(
+        <h1 key={key++} className="mb-3 text-[20px] font-bold leading-snug text-[var(--fg-primary)]">
+          {renderInlineMd(line.replace(/^■\s*/, ""), `t${key}`)}
+        </h1>,
+      );
+      i += 1;
+      continue;
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      const level = heading[1].length;
+      const cls =
+        level === 1
+          ? "mt-6 mb-2 text-[18px] font-bold text-[var(--fg-primary)]"
+          : level === 2
+            ? "mt-6 mb-2 text-[16px] font-bold text-[var(--fg-primary)]"
+            : "mt-4 mb-1.5 text-[14px] font-bold text-[var(--fg-secondary)]";
+      const Tag = (level === 1 ? "h1" : level === 2 ? "h2" : "h3") as "h1" | "h2" | "h3";
+      blocks.push(
+        <Tag key={key++} className={cls}>
+          {renderInlineMd(heading[2], `h${key}`)}
+        </Tag>,
+      );
+      i += 1;
+      continue;
+    }
+
+    if (line.trim().startsWith(">")) {
+      const quote: string[] = [];
+      while (i < lines.length && lines[i].trim().startsWith(">")) {
+        quote.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <blockquote
+          key={key++}
+          className="my-3 rounded-[8px] border-l-4 border-[#4A90D9] bg-[var(--bg-muted)] px-3 py-2 text-[13px] leading-relaxed text-[var(--fg-secondary)]"
+        >
+          {quote.map((q, qi) => (
+            <p key={qi} className={qi > 0 ? "mt-1" : undefined}>
+              {renderInlineMd(q, `q${key}-${qi}`)}
+            </p>
+          ))}
+        </blockquote>,
+      );
+      continue;
+    }
+
+    if (line.trim().startsWith("|") && i + 1 < lines.length && isMdTableSep(lines[i + 1])) {
+      const headers = splitMdRow(line);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim().startsWith("|") && !isMdTableSep(lines[i])) {
+        rows.push(splitMdRow(lines[i]));
+        i += 1;
+      }
+      blocks.push(
+        <div key={key++} className="my-3 overflow-x-auto">
+          <table className="w-full min-w-[480px] border-collapse text-left text-[12.5px]">
+            <thead>
+              <tr>
+                {headers.map((h, hi) => (
+                  <th
+                    key={hi}
+                    className="border-b border-[var(--border-subtle)] bg-[var(--bg-muted)] px-2 py-1.5 font-bold text-[var(--fg-secondary)]"
+                  >
+                    {renderInlineMd(h, `th${key}-${hi}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, ri) => (
+                <tr key={ri}>
+                  {headers.map((_, ci) => (
+                    <td key={ci} className="border-b border-[var(--border-subtle)] px-2 py-1.5 text-[var(--fg-primary)]">
+                      {renderInlineMd(row[ci] ?? "", `td${key}-${ri}-${ci}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>,
+      );
+      continue;
+    }
+
+    if (/^\s*(?:[-*○])\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*(?:[-*○])\s+/.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*(?:[-*○])\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ul key={key++} className="my-2 list-disc space-y-1 pl-5 text-[13.5px] leading-relaxed text-[var(--fg-primary)]">
+          {items.map((item, ii) => (
+            <li key={ii}>{renderInlineMd(item, `li${key}-${ii}`)}</li>
+          ))}
+        </ul>,
+      );
+      continue;
+    }
+
+    const para: string[] = [];
+    while (
+      i < lines.length &&
+      lines[i].trim() &&
+      !lines[i].startsWith("■") &&
+      !/^#{1,3}\s+/.test(lines[i]) &&
+      !lines[i].trim().startsWith(">") &&
+      !/^\s*(?:[-*○])\s+/.test(lines[i]) &&
+      !(lines[i].trim().startsWith("|") && i + 1 < lines.length && isMdTableSep(lines[i + 1]))
+    ) {
+      para.push(lines[i]);
+      i += 1;
+    }
+    blocks.push(
+      <p key={key++} className="my-2 whitespace-pre-wrap text-[13.5px] leading-relaxed text-[var(--fg-primary)]">
+        {renderInlineMd(para.join("\n"), `p${key}`)}
+      </p>,
+    );
+  }
+
+  return <div className="monthly-report-md">{blocks}</div>;
 }
 
 function KpiCard({
@@ -93,6 +298,7 @@ function HBars({
   max: number;
   onClick?: (key: string) => void;
 }) {
+  const [hover, setHover] = useState<string | null>(null);
   if (!rows.length) return <Empty>표시할 데이터가 없어요</Empty>;
   const m = Math.max(max, 1);
   return (
@@ -103,11 +309,11 @@ function HBars({
           type="button"
           disabled={!onClick}
           onClick={() => onClick?.(r.key)}
-          className={`grid w-full grid-cols-[minmax(72px,160px)_1fr_52px] items-center gap-2 text-left ${onClick ? "cursor-pointer" : "cursor-default"}`}
+          onMouseEnter={() => setHover(r.key)}
+          onMouseLeave={() => setHover(null)}
+          className={`relative grid w-full grid-cols-[minmax(72px,160px)_1fr_52px] items-center gap-2 text-left ${onClick ? "cursor-pointer" : "cursor-default"}`}
         >
-          <span className="truncate text-[12px] font-semibold text-[var(--fg-secondary)]" title={r.label}>
-            {r.label}
-          </span>
+          <span className="truncate text-[12px] font-semibold text-[var(--fg-secondary)]">{r.label}</span>
           <span className="block h-3 overflow-hidden rounded-full bg-[var(--bg-sunken,#eee)]">
             <span
               className="block h-full rounded-full"
@@ -117,70 +323,325 @@ function HBars({
           <span className="text-right text-[12px] font-bold tabular-nums text-[var(--fg-primary)]">
             {r.hint ?? String(r.value)}
           </span>
+          {hover === r.key ? (
+            <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 w-max max-w-[240px] -translate-x-1/2 rounded-[10px] border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-2.5 py-1.5 text-left text-[11px] leading-snug text-[var(--fg-secondary)] shadow-[0_8px_24px_rgba(0,0,0,.12)]">
+              <span className="block font-bold text-[var(--fg-primary)]">{r.label}</span>
+              <span className="tabular-nums">{r.hint ?? String(r.value)}</span>
+            </span>
+          ) : null}
         </button>
       ))}
     </div>
   );
 }
 
-function LineChart({
+const CHART_H = 240;
+const CHART_PAD = { l: 40, r: 16, t: 16, b: 30 };
+const POINT_R = 4;
+const LINE_W = 2;
+
+function useChartWidth() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [w, setW] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const apply = (width: number) => {
+      const next = Math.max(280, Math.floor(width));
+      setW((prev) => (prev === next ? prev : next));
+    };
+    apply(el.clientWidth);
+    const ro = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (width) apply(width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return { ref, w };
+}
+
+function niceTicks(yMax: number): number[] {
+  if (yMax <= 0) return [0];
+  if (yMax <= 100 && yMax >= 40) return [0, 25, 50, 75, 100].filter((t) => t <= yMax + 1e-9);
+  const raw = yMax / 4;
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  const nice = [1, 2, 5, 10].map((n) => n * pow).find((n) => n >= raw) ?? raw;
+  const ticks: number[] = [];
+  for (let v = 0; v <= yMax + nice * 0.01; v += nice) ticks.push(Number(v.toFixed(6)));
+  if (ticks[ticks.length - 1] < yMax) ticks.push(yMax);
+  return ticks;
+}
+
+function hexAlpha(color: string, a: number): string {
+  if (color.startsWith("#") && (color.length === 7 || color.length === 4)) {
+    const h = color.length === 4
+      ? `#${color[1]}${color[1]}${color[2]}${color[2]}${color[3]}${color[3]}`
+      : color;
+    const r = Number.parseInt(h.slice(1, 3), 16);
+    const g = Number.parseInt(h.slice(3, 5), 16);
+    const b = Number.parseInt(h.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${a})`;
+  }
+  return color;
+}
+
+function ChartTooltip({
+  x,
+  y,
+  width,
+  title,
+  rows,
+  note,
+}: {
+  x: number;
+  y: number;
+  width: number;
+  title: string;
+  rows: Array<{ label: string; value: string; color?: string }>;
+  note?: string;
+}) {
+  const left = Math.min(Math.max(8, x - 110), Math.max(8, width - 228));
+  return (
+    <div
+      className="pointer-events-none absolute z-20 w-[220px] rounded-[12px] border border-[var(--border-subtle)] bg-[var(--bg-canvas)] px-3 py-2 text-left text-[11px] leading-relaxed text-[var(--fg-secondary)] shadow-[0_8px_24px_rgba(0,0,0,.12)]"
+      style={{ left, top: Math.max(4, y - 12), transform: "translateY(-100%)" }}
+    >
+      <div className="mb-1 font-bold text-[var(--fg-primary)]">{title}</div>
+      {rows.map((r) => (
+        <div key={r.label} className="flex items-center justify-between gap-3">
+          <span className="inline-flex min-w-0 items-center gap-1.5">
+            {r.color ? <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: r.color }} /> : null}
+            <span className="truncate">{r.label}</span>
+          </span>
+          <span className="tabular-nums font-bold text-[var(--fg-primary)]">{r.value}</span>
+        </div>
+      ))}
+      {note ? <div className="mt-1 text-[10.5px] text-[var(--fg-tertiary)]">{note}</div> : null}
+    </div>
+  );
+}
+
+type ChartSeries = { key: string; color: string; values: number[] };
+
+function TrendChart({
   months,
   series,
   yMax = 100,
+  variant = "line",
+  formatValue,
+  tooltipExtra,
 }: {
   months: string[];
-  series: Array<{ key: string; color: string; values: number[] }>;
+  series: ChartSeries[];
   yMax?: number;
+  variant?: "line" | "area";
+  formatValue?: (v: number) => string;
+  tooltipExtra?: string[];
 }) {
+  const { ref, w } = useChartWidth();
+  const [hover, setHover] = useState<number | null>(null);
+  const fmt = formatValue ?? ((v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1)));
+
   if (!months.length || !series.some((s) => s.values.some((v) => v > 0))) {
     return <Empty>표시할 추이가 없어요</Empty>;
   }
-  const W = 640;
-  const H = 220;
-  const padL = 36;
-  const padR = 12;
-  const padTop = 16;
-  const padBot = 28;
-  const plotW = W - padL - padR;
-  const plotH = H - padTop - padBot;
+
+  const W = w || 640;
+  const pad = CHART_PAD;
+  const plotW = W - pad.l - pad.r;
+  const plotH = CHART_H - pad.t - pad.b;
   const n = months.length;
-  const xAt = (i: number) => (n === 1 ? padL + plotW / 2 : padL + (i * plotW) / (n - 1));
-  const yAt = (v: number) => padTop + ((yMax - Math.max(0, Math.min(yMax, v))) / yMax) * plotH;
-  const yTicks = [0, 25, 50, 75, 100].filter((t) => t <= yMax);
+  const maxY = Math.max(yMax, 1);
+  const xAt = (i: number) => (n === 1 ? pad.l + plotW / 2 : pad.l + (i * plotW) / (n - 1));
+  const yAt = (v: number) => pad.t + ((maxY - Math.max(0, Math.min(maxY, v))) / maxY) * plotH;
+  const yTicks = niceTicks(maxY);
+
+  const stacked = variant === "area"
+    ? months.map((_, i) => {
+        let acc = 0;
+        return series.map((s) => {
+          const v = s.values[i] ?? 0;
+          const from = acc;
+          acc += v;
+          return { from, to: acc, v };
+        });
+      })
+    : null;
+
+  const nearestIndex = (clientX: number, el: SVGSVGElement) => {
+    const rect = el.getBoundingClientRect();
+    const x = clientX - rect.left;
+    let best = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < n; i++) {
+      const d = Math.abs(xAt(i) - x);
+      if (d < bestDist) {
+        bestDist = d;
+        best = i;
+      }
+    }
+    return best;
+  };
+
+  const hoverX = hover != null ? xAt(hover) : 0;
+  const hoverY = hover != null
+    ? stacked
+      ? yAt(stacked[hover]?.[stacked[hover].length - 1]?.to ?? 0)
+      : Math.min(...series.map((s) => yAt(s.values[hover] ?? 0)))
+    : 0;
+
   return (
     <div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="block h-auto w-full">
-        {yTicks.map((t) => {
-          const y = yAt(t);
-          return (
-            <g key={t}>
-              <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="var(--border-subtle)" strokeWidth="1" />
-              <text x={padL - 6} y={y + 3} textAnchor="end" fontSize="10" fill="var(--fg-tertiary)">
-                {t}
+      <div ref={ref} className="relative h-[240px] w-full">
+        {w ? (
+          <svg
+            width={W}
+            height={CHART_H}
+            className="block"
+            onMouseMove={(e) => setHover(nearestIndex(e.clientX, e.currentTarget))}
+            onMouseLeave={() => setHover(null)}
+          >
+            {yTicks.map((t) => {
+              const y = yAt(t);
+              return (
+                <g key={t}>
+                  <line
+                    x1={pad.l}
+                    y1={y}
+                    x2={W - pad.r}
+                    y2={y}
+                    stroke="var(--border-subtle)"
+                    strokeWidth={1}
+                    strokeDasharray={t === 0 || t === maxY ? undefined : "3 4"}
+                  />
+                  <text
+                    x={pad.l - 6}
+                    y={y + 3}
+                    textAnchor="end"
+                    fontSize={11}
+                    fill="var(--fg-tertiary)"
+                    className="tabular-nums"
+                  >
+                    {t}
+                  </text>
+                </g>
+              );
+            })}
+            <line x1={pad.l} y1={pad.t} x2={pad.l} y2={CHART_H - pad.b} stroke="var(--border-subtle)" strokeWidth={1} />
+            <line
+              x1={pad.l}
+              y1={CHART_H - pad.b}
+              x2={W - pad.r}
+              y2={CHART_H - pad.b}
+              stroke="var(--border-subtle)"
+              strokeWidth={1}
+            />
+            {months.map((m, i) => (
+              <text
+                key={m}
+                x={xAt(i)}
+                y={CHART_H - 8}
+                textAnchor="middle"
+                fontSize={11}
+                fill="var(--fg-tertiary)"
+                className="tabular-nums"
+              >
+                {m.slice(2)}
               </text>
-            </g>
-          );
-        })}
-        {series.map((s) => {
-          const d = s.values
-            .map((v, i) => `${i === 0 ? "M" : "L"} ${xAt(i)} ${yAt(v)}`)
-            .join(" ");
-          return (
-            <g key={s.key}>
-              <path d={d} fill="none" stroke={s.color} strokeWidth="2" />
-              {s.values.map((v, i) => (
-                <circle key={i} cx={xAt(i)} cy={yAt(v)} r="3" fill={s.color} />
-              ))}
-            </g>
-          );
-        })}
-        {months.map((m, i) => (
-          <text key={m} x={xAt(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="var(--fg-tertiary)">
-            {m.slice(2)}
-          </text>
-        ))}
-      </svg>
-      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--fg-secondary)]">
+            ))}
+            {hover != null ? (
+              <line
+                x1={hoverX}
+                y1={pad.t}
+                x2={hoverX}
+                y2={CHART_H - pad.b}
+                stroke="var(--fg-tertiary)"
+                strokeWidth={1}
+                strokeDasharray="3 4"
+                opacity={0.45}
+              />
+            ) : null}
+
+            {variant === "area" && stacked
+              ? series.map((s, si) => {
+                  const top = months.map((_, i) => `${xAt(i)},${yAt(stacked[i][si].to)}`).join(" ");
+                  const bottom = months
+                    .map((_, i) => `${xAt(n - 1 - i)},${yAt(stacked[n - 1 - i][si].from)}`)
+                    .join(" ");
+                  return (
+                    <g key={s.key}>
+                      <polygon
+                        points={`${top} ${bottom}`}
+                        fill={hexAlpha(s.color, 0.28)}
+                        stroke="none"
+                      />
+                      <polyline
+                        points={months.map((_, i) => `${xAt(i)},${yAt(stacked[i][si].to)}`).join(" ")}
+                        fill="none"
+                        stroke={s.color}
+                        strokeWidth={LINE_W}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                      />
+                      {months.map((_, i) => (
+                        <circle
+                          key={i}
+                          cx={xAt(i)}
+                          cy={yAt(stacked[i][si].to)}
+                          r={POINT_R}
+                          fill={s.color}
+                          stroke="#fff"
+                          strokeWidth={1}
+                        />
+                      ))}
+                    </g>
+                  );
+                })
+              : series.map((s) => {
+                  const pts = months.map((_, i) => `${xAt(i)},${yAt(s.values[i] ?? 0)}`).join(" ");
+                  return (
+                    <g key={s.key}>
+                      <polyline
+                        points={pts}
+                        fill="none"
+                        stroke={s.color}
+                        strokeWidth={LINE_W}
+                        strokeLinejoin="round"
+                        strokeLinecap="round"
+                      />
+                      {months.map((_, i) => (
+                        <circle
+                          key={i}
+                          cx={xAt(i)}
+                          cy={yAt(s.values[i] ?? 0)}
+                          r={POINT_R}
+                          fill={s.color}
+                          stroke="#fff"
+                          strokeWidth={1}
+                        />
+                      ))}
+                    </g>
+                  );
+                })}
+          </svg>
+        ) : null}
+        {hover != null && w ? (
+          <ChartTooltip
+            x={hoverX}
+            y={hoverY}
+            width={W}
+            title={months[hover]}
+            rows={series.map((s, si) => ({
+              label: s.key,
+              value: fmt(stacked ? stacked[hover][si].v : (s.values[hover] ?? 0)),
+              color: s.color,
+            }))}
+            note={tooltipExtra?.[hover]}
+          />
+        ) : null}
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-[var(--fg-secondary)]">
         {series.map((s) => (
           <span key={s.key} className="inline-flex items-center gap-1">
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: s.color }} />
@@ -332,18 +793,21 @@ export default function MonthlyReportWorkbench() {
 
   const trendMonths = data?.trend.map((t) => t.month) ?? [];
   const trendSeries = [
-    { key: "Hot", color: "#E74C3C", values: data?.trend.map((t) => t.hotRate) ?? [] },
     {
       key: "Cold",
       color: "#4A90D9",
       values: data?.trend.map((t) => (t.total ? (t.cold / t.total) * 100 : 0)) ?? [],
     },
+    { key: "Hot", color: "#E74C3C", values: data?.trend.map((t) => t.hotRate) ?? [] },
     {
       key: "Melt",
       color: "#52C41A",
       values: data?.trend.map((t) => (t.total ? (t.melt / t.total) * 100 : 0)) ?? [],
     },
   ];
+  const trendTooltipExtra = data?.trend.map(
+    (t) => `Cold ${t.cold}명 · Hot ${t.hot}명 · Melt ${t.melt}명`,
+  );
 
   const catKeys = useMemo(() => {
     const keys = new Set<string>();
@@ -634,8 +1098,14 @@ export default function MonthlyReportWorkbench() {
               )}
             </Panel>
 
-            <Panel title="월별 Hot/Cold/Melt 비중 추이">
-              <LineChart months={trendMonths} series={trendSeries} />
+            <Panel title="월별 Hot/Cold/Melt 비중 추이" sub="Cold · Hot · Melt 비중을 쌓은 영역형이에요">
+              <TrendChart
+                months={trendMonths}
+                series={trendSeries}
+                variant="area"
+                formatValue={(v) => `${v.toFixed(1)}%`}
+                tooltipExtra={trendTooltipExtra}
+              />
             </Panel>
 
             <Panel
@@ -685,7 +1155,12 @@ export default function MonthlyReportWorkbench() {
             </Panel>
 
             <Panel title="대분류별 위반 건수 추이 (월별)" sub="여러 달에 걸쳐 교정됐는지 확인할 수 있어요">
-              <LineChart months={data?.categoryTrend.map((p) => p.month) ?? []} series={catSeries} yMax={catMax} />
+              <TrendChart
+                months={data?.categoryTrend.map((p) => p.month) ?? []}
+                series={catSeries}
+                yMax={catMax}
+                formatValue={(v) => `${v.toLocaleString("ko-KR")}건`}
+              />
             </Panel>
 
             <Panel
@@ -760,25 +1235,32 @@ export default function MonthlyReportWorkbench() {
                 선택된 월 기준 보고서예요. 마크다운 표 형이라 노션에 그대로 붙여넣기 가능해요. 필요한 부분은 직접
                 수정해서 쓰세요.
               </p>
-              <label className="block text-[12px] font-semibold text-[var(--fg-secondary)]">
-                이번 달 평가 특이사항 (정책 변경·평가 유예·제외 대상 등 — 직접 입력)
-              </label>
-              <textarea
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                onBlur={() => void saveNotes()}
-                placeholder="예: 26년 4월부터 예절·화법 정상 평가 도입 / 고객요구 재진술 평가 유예"
-                className="min-h-[70px] w-full rounded-[8px] border border-[var(--border-subtle)] p-2.5 text-[12.5px]"
-              />
-              <textarea
-                value={draftText}
-                onChange={(e) => {
-                  setDraftText(e.target.value);
-                  setDraftSaved(false);
-                }}
-                spellCheck={false}
-                className="min-h-[340px] w-full rounded-[8px] border border-[var(--border-subtle)] p-3 font-mono text-[12.5px] leading-relaxed"
-              />
+              <CollapsibleSection title="평가 특이사항">
+                <label className="mb-1.5 block text-[12px] font-semibold text-[var(--fg-secondary)]">
+                  이번 달 평가 특이사항 (정책 변경·평가 유예·제외 대상 등 — 직접 입력)
+                </label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  onBlur={() => void saveNotes()}
+                  placeholder="예: 26년 4월부터 예절·화법 정상 평가 도입 / 고객요구 재진술 평가 유예"
+                  className="min-h-[70px] w-full rounded-[8px] border border-[var(--border-subtle)] p-2.5 text-[12.5px]"
+                />
+              </CollapsibleSection>
+              <CollapsibleSection title="초안 편집" defaultOpen={false}>
+                <textarea
+                  value={draftText}
+                  onChange={(e) => {
+                    setDraftText(e.target.value);
+                    setDraftSaved(false);
+                  }}
+                  spellCheck={false}
+                  className="min-h-[340px] w-full rounded-[8px] border border-[var(--border-subtle)] p-3 font-mono text-[12.5px] leading-relaxed"
+                />
+              </CollapsibleSection>
+              <CollapsibleSection title="미리보기">
+                <ReportMarkdownPreview text={draftText} />
+              </CollapsibleSection>
               <div className="flex flex-wrap gap-2 print:hidden">
                 <ActionButton variant="neutralOutline" size="small" loading={draftBusy} onClick={() => void regenerateDraft()}>
                   초안 재생성

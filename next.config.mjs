@@ -9,6 +9,7 @@ const nextConfig = {
     "@google-cloud/storage",
     "@google-cloud/speech",
     "google-auth-library",
+    "pg",
   ],
 
   // ffmpeg-static은 바이너리 경로를 문자열로만 넘겨서 Next 파일 추적기가

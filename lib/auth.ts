@@ -1,7 +1,7 @@
 import type { NextAuthOptions } from "next-auth";
 import GoogleProvider from "next-auth/providers/google";
 import { isAdmin } from "./adminEmails";
-import { resolveCanAccessCallQuality } from "./resolveAccess";
+import { resolveCanAccessMonthlyReport, resolveCanAccessQualityEval } from "./resolveAccess";
 
 const ACCESS_REFRESH_MS = 10 * 60 * 1000;
 
@@ -32,19 +32,24 @@ export const authOptions: NextAuthOptions = {
 
       const due =
         user != null ||
-        token.callQualityAccess === undefined ||
+        token.qualityEvalAccess === undefined ||
+        token.monthlyReportAccess === undefined ||
         !token.accessCheckedAt ||
         Date.now() - token.accessCheckedAt > ACCESS_REFRESH_MS;
 
       if (due) {
-        token.callQualityAccess = await resolveCanAccessCallQuality(email);
+        token.qualityEvalAccess = await resolveCanAccessQualityEval(email);
+        token.monthlyReportAccess = await resolveCanAccessMonthlyReport(email);
+        delete token.evalProgressAllAccess;
+        delete token.callQualityAccess;
         token.accessCheckedAt = Date.now();
       }
       return token;
     },
     async session({ session, token }) {
       session.access = {
-        callQuality: token.callQualityAccess === true,
+        qualityEval: token.qualityEvalAccess === true,
+        monthlyReport: token.monthlyReportAccess === true,
       };
       return session;
     },

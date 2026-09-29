@@ -1,0 +1,125 @@
+{
+  "migration": "feedback-channels-v1-20260916",
+  "project": "data-proj-470202",
+  "dataset": "ds_qradar_dev",
+  "location": "US",
+  "sourceFeedbackId": "3a9f9ac3-df61-490d-ae69-ec6c047b324e",
+  "sourcePhoneId": "f49785d7-21f3-439e-a186-d35483afc197",
+  "draftId": "feedback-channels-v1-20260916-set-8ff9e09d739185427ecf",
+  "itemVersions": [
+    {
+      "criterionId": 415,
+      "promptId": "feedback-channels-v1-20260916-item-1588c9531af6cd70e455",
+      "versionLabel": "feedback-channels-v1-20260916-415"
+    },
+    {
+      "criterionId": 423,
+      "promptId": "feedback-channels-v1-20260916-item-0cb9f8938783812a4e35",
+      "versionLabel": "feedback-channels-v1-20260916-423"
+    },
+    {
+      "criterionId": 424,
+      "promptId": "feedback-channels-v1-20260916-item-2814e8a4e12686245069",
+      "versionLabel": "feedback-channels-v1-20260916-424"
+    },
+    {
+      "criterionId": 425,
+      "promptId": "feedback-channels-v1-20260916-item-df8b4fed5b36084facb5",
+      "versionLabel": "feedback-channels-v1-20260916-425"
+    },
+    {
+      "criterionId": 426,
+      "promptId": "feedback-channels-v1-20260916-item-8ceff3343197a34c60da",
+      "versionLabel": "feedback-channels-v1-20260916-426"
+    },
+    {
+      "criterionId": 428,
+      "promptId": "feedback-channels-v1-20260916-item-4aa91b084b3e3a5cf694",
+      "versionLabel": "feedback-channels-v1-20260916-428"
+    },
+    {
+      "criterionId": 429,
+      "promptId": "feedback-channels-v1-20260916-item-497d06b736b74c20e48f",
+      "versionLabel": "feedback-channels-v1-20260916-429"
+    },
+    {
+      "criterionId": 430,
+      "promptId": "feedback-channels-v1-20260916-item-2e8b71cd76bf9c3d18a2",
+      "versionLabel": "feedback-channels-v1-20260916-430"
+    },
+    {
+      "criterionId": 652,
+      "promptId": "feedback-channels-v1-20260916-item-78c94c5de53359b8ac3e",
+      "versionLabel": "feedback-channels-v1-20260916-652"
+    },
+    {
+      "criterionId": 407,
+      "promptId": "feedback-channels-v1-20260916-item-5447cd7f86c435f03aef",
+      "versionLabel": "feedback-channels-v1-20260916-407"
+    },
+    {
+      "criterionId": 408,
+      "promptId": "feedback-channels-v1-20260916-item-700d0157e1553e29472c",
+      "versionLabel": "feedback-channels-v1-20260916-408"
+    },
+    {
+      "criterionId": 409,
+      "promptId": "feedback-channels-v1-20260916-item-fb217a02b30154c5efdc",
+      "versionLabel": "feedback-channels-v1-20260916-409"
+    },
+    {
+      "criterionId": 410,
+      "promptId": "feedback-channels-v1-20260916-item-9d6273b13917d58f1688",
+      "versionLabel": "feedback-channels-v1-20260916-410"
+    },
+    {
+      "criterionId": 411,
+      "promptId": "feedback-channels-v1-20260916-item-20ba838547d34e532029",
+      "versionLabel": "feedback-channels-v1-20260916-411"
+    },
+    {
+      "criterionId": 419,
+      "promptId": "feedback-channels-v1-20260916-item-b21ff9086dd7e9b2188e",
+      "versionLabel": "feedback-channels-v1-20260916-419"
+    },
+    {
+      "criterionId": 418,
+      "promptId": "feedback-channels-v1-20260916-item-e112e4829e212819cc0f",
+      "versionLabel": "feedback-channels-v1-20260916-418"
+    },
+    {
+      "criterionId": 420,
+      "promptId": "feedback-channels-v1-20260916-item-ca4850d31851c6048303",
+      "versionLabel": "feedback-channels-v1-20260916-420"
+    },
+    {
+      "criterionId": 421,
+      "promptId": "feedback-channels-v1-20260916-item-7029ba8436d626a55a34",
+      "versionLabel": "feedback-channels-v1-20260916-421"
+    },
+    {
+      "criterionId": 545,
+      "promptId": "feedback-channels-v1-20260916-item-7ca16bade398a07a0500",
+      "versionLabel": "feedback-channels-v1-20260916-545"
+    },
+    {
+      "criterionId": 546,
+      "promptId": "feedback-channels-v1-20260916-item-97dba1269b10b681a106",
+      "versionLabel": "feedback-channels-v1-20260916-546"
+    }
+  ],
+  "disabledIds": [
+    416,
+    413,
+    547,
+    548
+  ],
+  "activeCount": 20,
+  "backupTables": [
+    "data-proj-470202.ds_qradar_dev.qradar_llm_prompt_versions_backup_channels_20260916_v1",
+    "data-proj-470202.ds_qradar_dev.qradar_llm_criterion_prompts_backup_channels_20260916_v1",
+    "data-proj-470202.ds_qradar_dev.qradar_eval_set_criteria_backup_channels_20260916_v1"
+  ],
+  "verified": true,
+  "rerun": true
+}

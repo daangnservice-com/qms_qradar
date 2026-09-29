@@ -1,10 +1,12 @@
 import { CS_CHECKLIST, type CsCriterion } from "./csChecklist";
 import { DEFAULT_OUTPUT_SCHEMA_CONFIG, DEFAULT_RESULT_PARSE_CONFIG, type OutputSchemaConfig } from "./promptTypes";
 import { buildResponseSchemaFromConfig } from "./outputSchema";
+import { FEEDBACK_FIRST_PASS_GUIDANCE, FEEDBACK_CHECKLIST_TEMPLATE } from './feedbackPromptDraft';
 
 // 하드코딩 폴백·최초 시드용. BQ에 production 버전이 있으면 이쪽은 쓰이지 않는다.
 
-export const PROMPT_TEMPLATE_KEYS = ["call_eval_growth", "call_eval_pay", "feedback_eval", "chatcs_eval"] as const;
+// call_eval_pay(페이 콜 품질)는 페이팀 콜 평가 폐기로 제거. BQ의 과거 버전 행은 조회하지 않는다.
+export const PROMPT_TEMPLATE_KEYS = ["call_eval_growth", "feedback_eval", "chatcs_eval"] as const;
 export type PromptTemplateKey = (typeof PROMPT_TEMPLATE_KEYS)[number];
 export type PromptChannel = "phone" | "feedback" | "chatcs";
 
@@ -19,7 +21,7 @@ export const PROMPT_CHANNEL_CONFIG: Record<
 > = {
   phone: {
     label: "콜",
-    templateKeys: ["call_eval_growth", "call_eval_pay"],
+    templateKeys: ["call_eval_growth"],
     defaultTemplateKey: "call_eval_growth",
     modality: "audio",
   },
@@ -43,17 +45,10 @@ export function promptChannelForTemplateKey(templateKey: PromptTemplateKey): Pro
   return "phone";
 }
 
-export function templateKeyForOrg(org: "growth" | "pay"): PromptTemplateKey {
-  return org === "pay" ? "call_eval_pay" : "call_eval_growth";
-}
-
-export function templateKeyForChannel(
-  channel: "phone" | "feedback" | "chatcs",
-  org: "growth" | "pay" = "growth",
-): PromptTemplateKey {
+export function templateKeyForChannel(channel: "phone" | "feedback" | "chatcs"): PromptTemplateKey {
   if (channel === "feedback") return "feedback_eval";
   if (channel === "chatcs") return "chatcs_eval";
-  return templateKeyForOrg(org);
+  return "call_eval_growth";
 }
 
 /** 런타임에 치환되는 변수. 프롬프트 매니저 미리보기에도 안내. */
@@ -245,8 +240,8 @@ export function defaultPromptSeed(templateKey: PromptTemplateKey) {
   return {
     templateKey,
     versionLabel: "v1",
-    basePrompt: isText ? DEFAULT_TEXT_BASE_PROMPT : DEFAULT_BASE_PROMPT,
-    checklistTemplate: isText
+    basePrompt: templateKey === 'feedback_eval' ? `${DEFAULT_TEXT_BASE_PROMPT}\n\n${FEEDBACK_FIRST_PASS_GUIDANCE}` : isText ? DEFAULT_TEXT_BASE_PROMPT : DEFAULT_BASE_PROMPT,
+    checklistTemplate: templateKey === 'feedback_eval' ? FEEDBACK_CHECKLIST_TEMPLATE : isText
       ? DEFAULT_TEXT_CHECKLIST_TEMPLATE
       : withChecklist
         ? DEFAULT_CHECKLIST_TEMPLATE

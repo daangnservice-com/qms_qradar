@@ -4,6 +4,14 @@ function part(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTyp
   return parts.find((p) => p.type === type)?.value ?? "";
 }
 
+/** 스케줄 생성 시각이 이미 오늘 due를 지났으면 오늘 실행을 건너뛴다. */
+export function initialLastRunDateKst(hour: number, minute: number, now = new Date()): string | null {
+  const clock = kstClock(now);
+  const nowMin = clock.hour * 60 + clock.minute;
+  const dueMin = clampHour(hour) * 60 + clampMinute(minute);
+  return nowMin >= dueMin ? clock.date : null;
+}
+
 export function currentDateKst(now = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Seoul",
@@ -72,4 +80,33 @@ export function clampMinute(n: number): number {
 export function clampPositiveInt(n: number, fallback: number, max = 10_000): number {
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(1, Math.trunc(n)));
+}
+
+export type RecurrenceKind =
+  | { kind: "once" }
+  | { kind: "weekly"; weekday: number }
+  | { kind: "monthly"; dayOfMonth: number };
+
+/** 매일 시각 + 반복(1회/매주/매월). lastRunDateKst 가 오늘이면 스킵. */
+export function isRecurrenceDue(opts: {
+  enabled: boolean;
+  hour: number;
+  minute: number;
+  recurrence: RecurrenceKind;
+  lastRunDateKst: string | null;
+  now?: Date;
+}): boolean {
+  if (!opts.enabled) return false;
+  const clock = kstClock(opts.now ?? new Date());
+  if (opts.lastRunDateKst === clock.date) return false;
+  const nowMin = clock.hour * 60 + clock.minute;
+  const dueMin = clampHour(opts.hour) * 60 + clampMinute(opts.minute);
+  if (nowMin < dueMin) return false;
+  if (opts.recurrence.kind === "once") return !opts.lastRunDateKst;
+  const weekday = new Date(`${clock.date}T12:00:00+09:00`).getDay();
+  if (opts.recurrence.kind === "weekly") {
+    return weekday === ((opts.recurrence.weekday % 7) + 7) % 7;
+  }
+  const day = Number(clock.date.slice(8, 10));
+  return day === Math.min(28, Math.max(1, Math.trunc(opts.recurrence.dayOfMonth)));
 }

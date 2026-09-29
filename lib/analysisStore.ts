@@ -5,7 +5,6 @@
 import type { EvaluationResult } from "./types";
 import type { CallQualityOrg } from "./callQualityOrg";
 import {
-  ensureEvalResultsTable,
   getEvalResultByAnalysisId,
   getLatestEvalResult,
   getLatestEvaluationResult,
@@ -87,7 +86,6 @@ export async function getLatestResultByConversation(
 
 /** 결과 + 검수 메타 */
 export async function getLatestResultMeta(org: CallQualityOrg, conversationId: string) {
-  await ensureEvalResultsTable();
   return getLatestEvalResult({ conversationId, org });
 }
 

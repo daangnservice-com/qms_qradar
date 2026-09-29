@@ -1,5 +1,5 @@
-import { getBQ } from "./bigquery";
 import { distBq } from "./bqRefs";
+import { distRows, evalMonthWherePg } from "./distDb";
 import type { EvalOpsAccessLevel } from "./adminEmails";
 import type {
   DistCfg,
@@ -17,14 +17,12 @@ import {
   calendarMonthOf,
   compareDistSetIdDesc,
   distSetLabel,
-  evalMonthWhereSql,
   isDistSetId,
   parseDistSetId,
 } from "./distSet";
 import { parseEvalItems } from "./distWorkload";
 import { latestHistoryForMonth } from "./distAssign";
 
-const loc = () => (distBq.location ? { location: distBq.location } : {});
 
 function unwrap(v: unknown): unknown {
   if (v && typeof v === "object" && "value" in v) return (v as { value: unknown }).value;
@@ -94,8 +92,7 @@ export function parseJson<T>(raw: unknown, fallback: T): T {
 
 async function tryQuery<T extends Record<string, unknown>>(query: string, params?: Record<string, unknown>): Promise<T[]> {
   try {
-    const [rows] = await getBQ().query({ query, params, ...loc() });
-    return ((rows as T[]) || []).filter(Boolean);
+    return (await distRows<T>(query, params ?? {})).filter(Boolean);
   } catch (e) {
     console.warn("[evalOpsStore]", e instanceof Error ? e.message : e);
     return [];
@@ -300,7 +297,7 @@ export async function readColdData(evalMonth: string): Promise<Record<string, Di
     }
     prev.push(`${py}-${String(pm).padStart(2, "0")}`);
   }
-  const rows = await tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.sql(distBq.tables.teamColdMonthly)}`);
+  const rows = await tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.tables.teamColdMonthly} ORDER BY _row_id`);
   const teamData: Record<string, { e: number; c: number }> = {};
   for (const r of rows) {
     const rowYm = cellYm(pick(r, "eval_month", "col_0", "ym"));
@@ -357,27 +354,27 @@ export async function getEvalOpsBootstrap(opts: {
   month?: string;
   userLevel: EvalOpsAccessLevel;
 }): Promise<EvalOpsBootstrap> {
-  const t = distBq.sql(distBq.tables.evalTargets);
+  const t = distBq.tables.evalTargets;
   const [monthRows, teamRows, gpsRows, aqtRows, histRows, cfgRows, optRows, allLockRows] = await Promise.all([
     tryQuery<{ eval_month: unknown }>(`
-      SELECT DISTINCT CAST(eval_month AS STRING) AS eval_month
+      SELECT DISTINCT eval_month::text AS eval_month
       FROM ${t}
-      WHERE eval_month IS NOT NULL AND TRIM(CAST(eval_month AS STRING)) <> ''
+      WHERE eval_month IS NOT NULL AND TRIM(eval_month::text) <> ''
       ORDER BY eval_month DESC
     `),
-    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.sql(distBq.tables.teams)} LIMIT 800`),
-    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.sql(distBq.tables.evaluators)} LIMIT 80`),
-    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.sql(distBq.tables.aqt)} LIMIT 80`),
+    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.tables.teams} ORDER BY _row_id LIMIT 800`),
+    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.tables.evaluators} ORDER BY _row_id LIMIT 80`),
+    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.tables.aqt} ORDER BY _row_id LIMIT 80`),
     tryQuery<Record<string, unknown>>(`
-      SELECT * FROM ${distBq.sql(distBq.tables.assignHistory)}
-      ORDER BY CAST(eval_month AS STRING) ASC
+      SELECT * FROM ${distBq.tables.assignHistory}
+      ORDER BY eval_month::text COLLATE "C" ASC, _row_id
       LIMIT 400
     `),
-    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.sql(distBq.tables.config)} LIMIT 40`),
-    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.sql(distBq.tables.evalItemOptions)} LIMIT 40`),
+    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.tables.config} ORDER BY _row_id LIMIT 40`),
+    tryQuery<Record<string, unknown>>(`SELECT * FROM ${distBq.tables.evalItemOptions} ORDER BY _row_id LIMIT 40`),
     tryQuery<Record<string, unknown>>(`
-      SELECT CAST(eval_month AS STRING) AS eval_month
-      FROM ${distBq.sql(distBq.tables.monthLocks)}
+      SELECT eval_month::text AS eval_month
+      FROM ${distBq.tables.monthLocks}
       LIMIT 200
     `),
   ]);
@@ -406,23 +403,26 @@ export async function getEvalOpsBootstrap(opts: {
       tryQuery<Record<string, unknown>>(
         `
           SELECT * FROM ${t}
-          WHERE ${evalMonthWhereSql("eval_month")}
+          WHERE ${evalMonthWherePg("eval_month")}
+          ORDER BY _row_id
           LIMIT 5000
         `,
         { month },
       ),
       tryQuery<Record<string, unknown>>(
         `
-          SELECT * FROM ${distBq.sql(distBq.tables.monthLocks)}
-          WHERE ${evalMonthWhereSql("eval_month")}
+          SELECT * FROM ${distBq.tables.monthLocks}
+          WHERE ${evalMonthWherePg("eval_month")}
+          ORDER BY _row_id
           LIMIT 8
         `,
         { month },
       ),
       tryQuery<Record<string, unknown>>(
         `
-          SELECT * FROM ${distBq.sql(distBq.tables.evalTargetSnapshots)}
-          WHERE ${evalMonthWhereSql("eval_month")}
+          SELECT * FROM ${distBq.tables.evalTargetSnapshots}
+          WHERE ${evalMonthWherePg("eval_month")}
+          ORDER BY _row_id
           LIMIT 5000
         `,
         { month },

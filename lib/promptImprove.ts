@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, type Schema } from "@google/generative-ai";
 import { CS_CHECKLIST } from "./csChecklist";
 import { listCriterionPromptsFor, resolveCriterionLabelMap } from "./criterionStore";
+import { readExposureChannels } from './criterionChannels';
 import { annotationReviewNeeded } from "./evalReviewTypes";
 import { listRecentEvalReviews } from "./evalReviewStore";
 import { logLlmCall } from "./llmCallLog";
@@ -226,7 +227,8 @@ export async function generateImprovedCriterionPrompt(input: {
 }): Promise<PromptImproveGenerateResult> {
   if (!input.examples.length) throw new Error("개선에 사용할 불일치 사례가 없습니다");
 
-  const versions = await listCriterionPromptsFor(input.criterionId);
+  const versions = (await listCriterionPromptsFor(input.criterionId)).filter((p) => readExposureChannels(p.exposureChannels).includes('phone'));
+  if (input.promptId && !versions.some((p) => p.promptId === input.promptId)) throw new Error('전화 학습 사례에는 전화 노출 상세만 사용할 수 있습니다');
   const selected =
     (input.promptId ? versions.find((v) => v.promptId === input.promptId) : null) ??
     versions.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0] ??

@@ -1,11 +1,12 @@
 # helpdesk-x (QRadar) 서비스 동작 구조
 
 > QMS 평가 설계 IA·화면 매핑: [docs/qms/00-overview.md](qms/00-overview.md)  
+> 서빙 DB: [docs/qms/system/serving-db.md](qms/system/serving-db.md)  
 > 팀/접속 안내: [헬프데스크-접속-안내.md](헬프데스크-접속-안내.md)
 
-> **프로덕션**: `https://helpdesk-x.daangnservice.com` (PAB 내부 EC2 · Docker `output: standalone` · ALB)  
-> **git**: https://github.com/karla0405/helpdesk-x (+ 조직 미러 https://github.com/daangnservice-com/helpdesk-x)  
-> 한 줄 설명: 당근서비스 **콜 품질 평가(QRadar)** — Google SSO 뒤, 이메일 화이트리스트로 탭·API를 게이트한다. Genesys 녹취 → Google STT → Gemini 판정, 결과는 BigQuery에 영구 저장. 평가 설계(QMS IA)로 평가표·정확도·프롬프트 개선을 운영한다.
+> **프로덕션**: 이 리포(`qms_qradar`)의 로컬 Next. helpdesk-x EC2(`https://helpdesk-x.daangnservice.com`)는 포크 이전 호스트다.  
+> **git**: 현재 작업 트리는 `qms_qradar`. helpdesk-x GitHub는 포크 이전 원격이다.  
+> 한 줄 설명: 당근서비스 **콜 품질 평가(QRadar)** — Google SSO 뒤, 이메일 화이트리스트로 탭·API를 게이트한다. Genesys 녹취 → Google STT → Gemini 판정. 콜·인앱 문의의 온디맨드 저장은 Postgres이고, BigQuery는 원천 pull과 덤프다. 평가 설계(QMS IA)로 평가표·정확도·프롬프트 개선을 운영한다.
 
 ---
 
@@ -27,7 +28,8 @@ flowchart TD
     EV --> G["Genesys 녹취"]
     G --> STT["Google STT<br>듀얼채널"]
     STT --> GEM["Gemini 2.5 Flash<br>채점·체크리스트"]
-    GEM --> BQR["BigQuery<br>qradar_evaluation_results"]
+    GEM --> PG["Postgres<br>call_serving · serving_eval_results"]
+    PG --> BQR["BigQuery 덤프<br>qradar_evaluation_results"]
 
     EO --> RS["검수 현황<br>/api/eval-ops/review-status"]
     RS --> BQR
@@ -42,8 +44,8 @@ flowchart TD
     TR --> BQU["BigQuery<br>qradar_usage_events"]
 ```
 
-- **콜 분석**은 상주 프로세스(Genesys + STT 장시간)라 Vercel 서버리스가 아니라 **EC2 Docker**로 운영한다.
-- **상태 저장**: 평가 결과·프롬프트 버전·LLM/STT 로그·사용량 모두 BigQuery(`data-proj-470202`, `BQ_TARGET`로 `ds_qradar_dev` / `ds_qradar_prod`). 오디오는 영구 저장하지 않는다.
+- **콜 분석**은 상주 프로세스(Genesys + STT 장시간)라 로컬 Next가 프로덕션이다. AWS 이전은 미룬 상태다.
+- **상태 저장**: 콜 목록·단건·검수와 종결 인앱 문의는 Postgres. BigQuery(`data-proj-470202`, 이 서버는 `BQ_TARGET=dev` → `ds_qradar_dev`)는 원천과 덤프다. 프롬프트·LLM/STT 로그·사용량은 아직 요청 중 BQ다. 오디오는 영구 저장하지 않는다. 상세는 [서빙 DB](qms/system/serving-db.md).
 - 레거시 파손 판별(`/damage`)·m4a 직접 업로드 UX는 **제거됨**.
 
 ---
@@ -77,13 +79,13 @@ flowchart TD
 
 ### 3-1. 평가 진행 (전체 / 고위험군)
 
-1. **샘플** — BQ `ds_growth_culture.qradar_evaluation_cases`에서 통화 목록·필터.
+1. **샘플** — Postgres `call_serving`. 원천은 BQ `qradar_evaluation_cases_flat`을 주기 pull한다.
 2. **녹취** — Genesys OAuth → recording API(단건, 배치 폴백).
 3. **STT** — GCS 임시 업로드 → `longRunningRecognize`(듀얼채널 화자분리). 기존 전사 재사용 가능.
 4. **공백** — STT 발화 간격(실패 시 ffmpeg `silencedetect`).
 5. **Gemini (AI 평가)** — CS 체크리스트 중심(검토필요 판정) · 공백/근거 기반 검수 지원.
 6. **수기 검수** — STT 위 검토필요/최종 Cold·Hot 정정·추가 → 「검수 완료」로 조회 시 파생.
-7. **저장** — 통합 테이블 `qradar_evaluation_results`(조직 구분 컬럼 포함). 공유 URL `/call-quality/result/[id]`.
+7. **저장** — Postgres `serving_eval_results`. BQ `qradar_evaluation_results`는 덤프. 공유 URL `/call-quality/result/[id]`.
 8. **재생** — `/api/call-quality/audio` WAV 프록시(Range 206, 다운로드 차단). 서버에 오디오 영구 저장 없음.
 9. **PII** — 전화·주민·카드·이메일 마스킹(저장·표시 멱등).
 
@@ -130,8 +132,8 @@ UI는 `EvalProgressWorkbench`(3-pane). `/call-quality/high-risk`는 동일 컴�
 | 음성인식 | Google Cloud Speech-to-Text (듀얼채널) |
 | 녹취 | Genesys Cloud recording API |
 | 무음 | `ffmpeg-static` (STT 폴백) |
-| 저장 | BigQuery · GCS(STT 임시) |
-| 배포 | Docker Compose on EC2, ALB `/api/health` |
+| 저장 | Postgres(서빙) · BigQuery(원천·덤프) · GCS(STT 임시) |
+| 배포 | 로컬 Next가 프로덕션. Postgres는 Docker Compose(호스트 5433). AWS는 이후 |
 | 테스트 | Vitest |
 
 ---
@@ -178,10 +180,12 @@ middleware.ts — NextAuth(withAuth) 세션 확인
 
 ### 6-4. BigQuery 타겟 (`lib/bqRefs.ts`)
 
+요청 경로의 콜·인앱 문의는 [서빙 DB](qms/system/serving-db.md)를 본다. 아래는 원천과 덤프 위치다. 인앱 CSAT은 문의 완결 이후에도 도착하므로, Postgres로 옮길 때 스레드 본문과 따로 갱신한다.
+
 | 구분 | 위치 |
 |---|---|
-| 공유 입력 | `ds_growth_culture` — cases, criteria view, Train references |
-| 앱 적재 | `ds_qradar_dev` 또는 `ds_qradar_prod` (`BQ_TARGET`) — results, prompts, usage, llm/stt logs |
+| 공유 입력 | `ds_growth_culture` — criteria view, Train references, QMS 케이스 상세 |
+| 앱 적재 | `ds_qradar_dev` 또는 `ds_qradar_prod` (`BQ_TARGET`) — cases_flat, results, prompts, usage, llm/stt logs |
 | 테이블 접두 | `qradar_` (예: `qradar_evaluation_results`, `qradar_usage_events`) |
 
 평가 데이터는 실행 결과와 차원을 분리한다.

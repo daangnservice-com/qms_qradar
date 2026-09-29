@@ -1,7 +1,9 @@
 import { getServerSession } from "next-auth";
+import { ChannelBindingError, readExposureChannels, requireExposureChannels } from '@/lib/criterionChannels';
+import { isEvaluationChannel } from '@/lib/evaluationChannel';
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessQualityEval } from "@/lib/sessionAccessServer";
 import {
   listSourceCriteria,
   listCriterionPrompts,
@@ -22,7 +24,7 @@ export const maxDuration = 60;
 async function requireAccess() {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (!await ensureSessionCanAccessAnyCallQuality(session)) {
+  if (!await ensureSessionCanAccessQualityEval(session)) {
     return { error: NextResponse.json({ error: "권한이 없습니다" }, { status: 403 }) };
   }
   return { email: email! };
@@ -52,7 +54,9 @@ export async function GET(req: Request) {
         fieldKeys: fieldKeys.length ? fieldKeys : DEFAULT_FIELD_KEYS,
       };
     });
-    return NextResponse.json(payload);
+    const channel = url.searchParams.get('channel');
+    if (channel && !isEvaluationChannel(channel)) return NextResponse.json({ error: '잘못된 채널' }, { status: 400 });
+    return NextResponse.json({ ...payload, prompts: isEvaluationChannel(channel) ? payload.prompts.filter((p) => readExposureChannels(p.exposureChannels).includes(channel)) : payload.prompts });
   } catch (e) {
     console.error("[api/prompts/criteria]", e);
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
@@ -82,6 +86,7 @@ export async function POST(req: Request) {
     }
     const fields = (body.fields as Record<string, string>) ?? {};
     const prompt = await saveCriterionPrompt({
+      exposureChannels: requireExposureChannels(body.exposureChannels),
       criterionId,
       category: String(body.category ?? ""),
       label: String(body.label ?? ""),
@@ -95,6 +100,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ prompt });
   } catch (e) {
     console.error("[api/prompts/criteria POST]", e);
-    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: e instanceof ChannelBindingError ? 400 : 500 });
   }
 }

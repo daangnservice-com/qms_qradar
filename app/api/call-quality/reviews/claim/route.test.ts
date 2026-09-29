@@ -31,8 +31,8 @@ const req = (body: unknown) =>
 beforeEach(() => vi.clearAllMocks());
 
 describe("POST /api/call-quality/reviews/claim", () => {
-  it("403 without allowlist access", async () => {
-    (getServerSession as any).mockResolvedValue({ user: { email: "someone@daangnservice.com" } });
+  it("403 for an account outside the domain", async () => {
+    (getServerSession as any).mockResolvedValue({ user: { email: "someone@gmail.com" } });
     expect((await POST(req({ conversationId: "c1" }))).status).toBe(403);
   });
 

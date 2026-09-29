@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { PrefixIcon, Text } from "@seed-design/react";
 import IconArrow2ClockwiseCircularLine from "@karrotmarket/react-monochrome-icon/IconArrow2ClockwiseCircularLine";
@@ -25,11 +25,17 @@ export default function EvalStatusWorkbench({ demo = false }: { demo?: boolean }
   const monthParam = searchParams.get("month")?.trim() || "";
   const [demoMonth, setDemoMonth] = useState("2026-08");
 
+  // 새로고침 버튼으로 부를 때만 서버가 원천을 다시 읽는다.
+  const freshRef = useRef(false);
   const live = useCachedFetch<StatusRes>({
     key: demo ? "" : `evalStatus:v2:${monthParam || "current"}`,
     enabled: !demo,
     fetcher: async () => {
-      const q = monthParam ? `month=${encodeURIComponent(monthParam)}` : "";
+      const params = new URLSearchParams();
+      if (monthParam) params.set("month", monthParam);
+      if (freshRef.current) params.set("fresh", "1");
+      freshRef.current = false;
+      const q = params.toString();
       const r = await fetch(`/api/results/status${q ? `?${q}` : ""}`);
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? "평가 현황 로드 실패");
@@ -41,7 +47,10 @@ export default function EvalStatusWorkbench({ demo = false }: { demo?: boolean }
   const error = demo ? null : live.error;
   const loading = demo ? false : live.loading;
   const validating = demo ? false : live.validating;
-  const refresh = live.refresh;
+  const refresh = useCallback(() => {
+    freshRef.current = true;
+    return live.refresh();
+  }, [live.refresh]);
 
   const month = demo ? demoMonth : data?.month || monthParam;
   const monthOptions = useMemo(

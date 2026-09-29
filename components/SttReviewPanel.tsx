@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Clipboard, Loader2, MessageSquare, Plus, Trash2, X } from "lucide-react";
+import { Check, Clipboard, Flag, Loader2, MessageSquare, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
 import { Badge } from "@seed-design/react";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { formatClock } from "@/lib/format";
@@ -13,8 +13,13 @@ import {
   type CriterionLabelSource,
 } from "@/lib/criterionLabel";
 import { badgesBySegment, buildSttChecklistBadges, type SttChecklistBadge } from "@/lib/sttChecklistBadges";
+import { seekSecForTranscript } from "@/lib/localSttQuality";
 import { isAgentSpeakerLabel } from "@/lib/sttSpeaker";
 import type { ChecklistResult, TranscriptSegment, SttSource } from "@/lib/types";
+import type { CallSttVersionSummary } from "@/lib/callArtifactVersions";
+import { sttVersionLabel } from "@/lib/callArtifactVersions";
+import type { LocalSttQueueView } from "@/lib/sttBatchTypes";
+import { isInFlightSttStatus, localSttQueueLabel } from "@/lib/sttBatchTypes";
 import {
   BEST_MARK_CATEGORIES,
   bestMarkLabel,
@@ -51,6 +56,101 @@ function SttSourceBadge({ source }: { source?: SttSource | null }) {
   );
 }
 
+function QueueStatusBanner({
+  queue,
+  hint,
+}: {
+  queue: LocalSttQueueView | null;
+  hint?: string | null;
+}) {
+  if (!queue || (!isInFlightSttStatus(queue.status) && queue.status !== "failed")) return null;
+  const inFlight = isInFlightSttStatus(queue.status);
+  const pct =
+    queue.progress != null && Number.isFinite(queue.progress)
+      ? Math.round(Math.min(1, Math.max(0, queue.progress)) * 100)
+      : null;
+  return (
+    <div
+      className={`border-b px-4 py-2 text-[12px] ${
+        queue.status === "failed"
+          ? "border-[var(--danger)]/20 bg-[var(--danger-subtle)] text-[var(--danger)]"
+          : "border-[var(--brand)]/15 bg-[var(--brand-subtle)] text-[var(--fg-secondary)]"
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        {inFlight ? <Loader2 className="h-3.5 w-3.5 animate-spin text-[var(--brand)]" /> : null}
+        <span className="font-semibold">{localSttQueueLabel(queue.status)}</span>
+        {pct != null && inFlight ? <span className="tabular-nums">{pct}%</span> : null}
+        {queue.stage ? <span className="text-[11px] text-[var(--fg-tertiary)]">{queue.stage}</span> : null}
+      </div>
+      {queue.error ? <p className="mt-0.5 text-[11px]">{queue.error}</p> : null}
+      {hint ? <p className="mt-0.5 text-[11px] text-[var(--fg-tertiary)]">{hint}</p> : null}
+    </div>
+  );
+}
+
+function SttVersionSelect({
+  versions,
+  selectedId,
+  onSelect,
+  busy,
+}: {
+  versions: CallSttVersionSummary[];
+  selectedId?: string | null;
+  onSelect?: (versionId: string) => void;
+  busy?: boolean;
+}) {
+  if (!versions.length || !onSelect) return null;
+  const latestId = versions[0]?.versionId;
+  const value = selectedId && versions.some((v) => v.versionId === selectedId) ? selectedId : (latestId ?? "");
+  return (
+    <select
+      className="qms-select mt-2 !h-8 w-full min-w-0 text-[12px]"
+      aria-label="STT 버전"
+      value={value}
+      disabled={busy || versions.length < 2}
+      onChange={(e) => {
+        const next = e.target.value;
+        if (next && next !== value) onSelect(next);
+      }}
+    >
+      {versions.map((v) => (
+        <option key={v.versionId} value={v.versionId}>
+          {sttVersionLabel(v, latestId)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function SttPanelActions({
+  onReportIssue,
+  onReprocess,
+  observeMode,
+}: {
+  onReportIssue?: () => void;
+  onReprocess?: () => void;
+  observeMode?: boolean;
+}) {
+  if (observeMode || (!onReportIssue && !onReprocess)) return null;
+  return (
+    <div className="flex items-center gap-1">
+      {onReportIssue ? (
+        <button type="button" className="qms-btn-ghost !h-7 !px-2 text-[11px]" onClick={onReportIssue}>
+          <Flag className="mr-1 inline h-3 w-3" />
+          이슈 리포팅
+        </button>
+      ) : null}
+      {onReprocess ? (
+        <button type="button" className="qms-btn-ghost !h-7 !px-2 text-[11px]" onClick={onReprocess}>
+          <RefreshCw className="mr-1 inline h-3 w-3" />
+          STT 재처리
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 type DraftHuman = {
   segmentIndex: number;
   atSec: number;
@@ -64,8 +164,10 @@ type DraftHuman = {
 type DraftAiReview = {
   badgeKey: string;
   criterionId: number;
-  reviewNeeded: boolean;
-  judgment: HumanJudgment;
+  /** null이면 아직 미선택 — 저장 불가 */
+  reviewNeeded: boolean | null;
+  /** null이면 아직 미선택 — 검토 필요일 때 저장 불가 */
+  judgment: HumanJudgment | null;
   comment: string;
   annotationId?: string;
   /** true면 동일 평가항목의 모든 발생에 판정·코멘트 일괄 적용 (scope=conversation) */
@@ -86,6 +188,16 @@ export default function SttReviewPanel({
   busy,
   sttSource,
   observeMode = false,
+  queue = null,
+  queueHint = null,
+  onReportIssue,
+  onReprocess,
+  onRequestLocalStt,
+  localSttBusy = false,
+  sttVersions = [],
+  selectedSttVersionId = null,
+  onSelectSttVersion,
+  sttVersionBusy = false,
 }: {
   conversationId: string;
   segments: TranscriptSegment[];
@@ -102,6 +214,16 @@ export default function SttReviewPanel({
   sttSource?: SttSource | null;
   /** true면 STT·재생만 — 평가/검수 UI 숨김 */
   observeMode?: boolean;
+  queue?: LocalSttQueueView | null;
+  queueHint?: string | null;
+  onReportIssue?: () => void;
+  onReprocess?: () => void;
+  onRequestLocalStt?: () => void;
+  localSttBusy?: boolean;
+  sttVersions?: CallSttVersionSummary[];
+  selectedSttVersionId?: string | null;
+  onSelectSttVersion?: (versionId: string) => void;
+  sttVersionBusy?: boolean;
 }) {
   const [openKey, setOpenKey] = useState<string | null>(null);
   const [hitsOnly, setHitsOnly] = useState(false);
@@ -181,21 +303,53 @@ export default function SttReviewPanel({
   }
 
   if (!segments.length) {
+    const queued = queue && isInFlightSttStatus(queue.status);
     return (
       <div className="qms-run-panel flex flex-col">
         <div className="border-b border-[var(--border-subtle)] px-4 py-3">
           <div className="flex flex-wrap items-center gap-2">
             <div className="text-[14px] font-bold">STT 상담 내역</div>
             <SttSourceBadge source={sttSource} />
+            <div className="ml-auto">
+              <SttPanelActions observeMode={observeMode} onReportIssue={onReportIssue} onReprocess={onReprocess} />
+            </div>
           </div>
           <div className="text-[11px] text-[var(--fg-tertiary)]">
             {observeMode ? "화자 분리" : "화자 분리 · 수기 검수"}
           </div>
+          <SttVersionSelect
+            versions={sttVersions}
+            selectedId={selectedSttVersionId}
+            onSelect={onSelectSttVersion}
+            busy={sttVersionBusy}
+          />
         </div>
-        <div className="flex min-h-[200px] items-center justify-center px-6 text-center text-[13px] text-[var(--fg-tertiary)]">
-          {observeMode
-            ? "이 통화의 STT 전사가 아직 없어요."
-            : "평가를 실행하면 화자 분리된 STT가 여기에 표시돼요."}
+        <QueueStatusBanner queue={queue} hint={queueHint} />
+        <div className="flex min-h-[200px] flex-col items-center justify-center gap-3 px-6 text-center text-[13px] text-[var(--fg-tertiary)]">
+          {queued ? (
+            <p>로컬 STT가 끝나면 여기에 전사가 표시돼요.</p>
+          ) : observeMode ? (
+            <p>이 통화의 STT 전사가 아직 없어요.</p>
+          ) : (
+            <>
+              <p>평가를 실행하면 화자 분리된 STT가 여기에 표시돼요.</p>
+              {onRequestLocalStt ? (
+                <button
+                  type="button"
+                  className="qms-btn-ghost"
+                  disabled={localSttBusy}
+                  onClick={onRequestLocalStt}
+                >
+                  {localSttBusy ? (
+                    <Loader2 className="mr-1.5 inline h-4 w-4 animate-spin" />
+                  ) : (
+                    <Server className="mr-1.5 inline h-4 w-4" />
+                  )}
+                  로컬 STT 요청
+                </button>
+              ) : null}
+            </>
+          )}
         </div>
       </div>
     );
@@ -210,7 +364,8 @@ export default function SttReviewPanel({
 
   return (
     <div className="qms-run-panel flex flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
+      <div className="border-b border-[var(--border-subtle)] px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
         <div className="text-[14px] font-bold">STT 상담 내역</div>
         <SttSourceBadge source={sttSource} />
         {!observeMode && (
@@ -222,6 +377,7 @@ export default function SttReviewPanel({
           </span>
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          <SttPanelActions observeMode={observeMode} onReportIssue={onReportIssue} onReprocess={onReprocess} />
           <div className="flex items-center gap-1">
             <CopyIconButton
               title="STT 전문만 복사"
@@ -269,11 +425,20 @@ export default function SttReviewPanel({
           )}
         </div>
       </div>
+          <SttVersionSelect
+            versions={sttVersions}
+            selectedId={selectedSttVersionId}
+            onSelect={onSelectSttVersion}
+            busy={sttVersionBusy}
+          />
+      </div>
+      <QueueStatusBanner queue={queue} hint={queueHint} />
 
       <div className="flex flex-col gap-2.5 bg-[var(--bg-subtle)] px-4 py-4">
         {visibleIndexes.map((i) => {
           const s = segments[i];
           const isAgent = isAgentSpeakerLabel(s.speaker);
+          const seekSec = seekSecForTranscript(s);
           const text = maskPII(s.text);
           const segAi = aiBySeg.get(i) ?? [];
           const segHuman = humanBySeg.get(i) ?? [];
@@ -292,12 +457,12 @@ export default function SttReviewPanel({
                 <div className="flex items-end gap-1.5">
                   {isAgent && (
                     <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--fg-tertiary)]">
-                      {formatClock(s.atSec)}
+                      {formatClock(seekSec)}
                     </span>
                   )}
                   <SeekableTranscriptText
                     text={text}
-                    atSec={s.atSec}
+                    atSec={seekSec}
                     onSeek={onSeek}
                     className={`rounded-[18px] px-3.5 py-2.5 text-left text-[13.5px] leading-relaxed ${
                       isAgent
@@ -307,7 +472,7 @@ export default function SttReviewPanel({
                   />
                   {!isAgent && (
                     <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--fg-tertiary)]">
-                      {formatClock(s.atSec)}
+                      {formatClock(seekSec)}
                     </span>
                   )}
                   {!observeMode && (
@@ -318,7 +483,7 @@ export default function SttReviewPanel({
                       onClick={() =>
                         setDraftHuman({
                           segmentIndex: i,
-                          atSec: s.atSec,
+                          atSec: seekSec,
                           quote: s.text,
                           criterionId: criterionOptions[0]?.id ?? 407,
                           bestCategory: BEST_MARK_CATEGORIES[0].id,
@@ -357,15 +522,15 @@ export default function SttReviewPanel({
                                 ? true
                                 : review?.scope === "occurrence"
                                   ? false
-                                  : siblingCount > 1 || configuredBulk;
+                                  : configuredBulk;
                             setDraftAi({
                               badgeKey: b.key,
                               criterionId: b.criterionId,
                               reviewNeeded:
                                 typeof review?.reviewNeeded === "boolean"
                                   ? review.reviewNeeded
-                                  : b.violated,
-                              judgment: review?.judgment ?? (b.violated ? "cold" : "hot"),
+                                  : null,
+                              judgment: review?.judgment ?? null,
                               comment: review?.comment ?? "",
                               annotationId: review?.annotationId,
                               bulkApply: defaultBulk,
@@ -377,6 +542,9 @@ export default function SttReviewPanel({
                           saving={saving}
                           onSave={async () => {
                             if (!draftAi || draftAi.badgeKey !== b.key || !onSaveReview) return;
+                            const reviewNeeded = draftAi.reviewNeeded;
+                            if (reviewNeeded === null) return;
+                            if (reviewNeeded && draftAi.judgment === null) return;
                             setSaving(true);
                             try {
                               const scope = draftAi.bulkApply ? "conversation" : "occurrence";
@@ -392,8 +560,8 @@ export default function SttReviewPanel({
                                 atSec: b.evidenceAtSec,
                                 segmentIndex: b.segmentIndex,
                                 criterionId: draftAi.criterionId,
-                                reviewNeeded: draftAi.reviewNeeded,
-                                judgment: draftAi.reviewNeeded ? draftAi.judgment : "hot",
+                                reviewNeeded,
+                                judgment: reviewNeeded ? (draftAi.judgment ?? "cold") : "hot",
                                 bestCategory: null,
                                 comment: draftAi.comment,
                                 aiCriterionId: b.criterionId,
@@ -820,6 +988,8 @@ function AiBadgeChip({
   const human = review ? reviewSummary(review) : null;
   const bulkReview = review?.scope === "conversation";
   const canBulk = siblingCount > 1;
+  const canSave =
+    draft !== null && draft.reviewNeeded !== null && (!draft.reviewNeeded || draft.judgment !== null);
   return (
     <div className={`max-w-full ${open ? "w-full" : ""}`}>
       <button
@@ -925,7 +1095,7 @@ function AiBadgeChip({
               <button
                 type="button"
                 className={`flex-1 rounded-md py-1.5 text-[12px] font-bold ${
-                  draft.reviewNeeded ? "bg-[var(--info)] text-white" : "bg-[var(--bg-muted)]"
+                  draft.reviewNeeded === true ? "bg-[var(--info)] text-white" : "bg-[var(--bg-muted)]"
                 }`}
                 onClick={() =>
                   setDraft({
@@ -940,14 +1110,18 @@ function AiBadgeChip({
               <button
                 type="button"
                 className={`flex-1 rounded-md py-1.5 text-[12px] font-bold ${
-                  !draft.reviewNeeded ? "bg-[var(--c-carrot-500)] text-white" : "bg-[var(--bg-muted)]"
+                  draft.reviewNeeded === false ? "bg-[var(--c-carrot-500)] text-white" : "bg-[var(--bg-muted)]"
                 }`}
-                onClick={() => setDraft({ ...draft, reviewNeeded: false, judgment: "hot" })}
+                onClick={() => setDraft({ ...draft, reviewNeeded: false, judgment: null })}
               >
                 불필요 · 과검출
               </button>
             </div>
-            {draft.reviewNeeded ? (
+            {draft.reviewNeeded === null ? (
+              <p className="mt-2 text-[10.5px] leading-snug text-[var(--fg-tertiary)]">
+                검토 필요 여부를 먼저 선택하세요. 필요를 고르면 최종 판정을 이어서 남깁니다.
+              </p>
+            ) : draft.reviewNeeded ? (
               <>
                 <div className="mb-1 mt-2 text-[10.5px] font-bold text-[var(--fg-tertiary)]">최종 판정</div>
                 <div className="flex flex-wrap gap-1">
@@ -992,12 +1166,19 @@ function AiBadgeChip({
               value={draft.comment}
               onChange={(e) => setDraft({ ...draft, comment: e.target.value })}
             />
-            <button type="button" className="qms-btn-primary mt-2 w-full" disabled={saving} onClick={onSave}>
+            <button
+              type="button"
+              className="qms-btn-primary mt-2 w-full"
+              disabled={saving || !canSave}
+              onClick={onSave}
+            >
               {saving
                 ? "저장 중…"
-                : draft.bulkApply && canBulk
-                  ? `수기 검수 저장 · ${siblingCount}건 일괄`
-                  : "수기 검수 저장"}
+                : !canSave
+                  ? "판정을 선택하세요"
+                  : draft.bulkApply && canBulk
+                    ? `수기 검수 저장 · ${siblingCount}건 일괄`
+                    : "수기 검수 저장"}
             </button>
           </div>
         </div>

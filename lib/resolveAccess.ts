@@ -1,27 +1,28 @@
 import {
-  CALL_QUALITY_GROUP_EMAILS,
-  canAccessCallQuality,
-  canAccessPayCallQuality,
+  MONTHLY_REPORT_GROUP_EMAILS,
+  QUALITY_EVAL_GROUP_EMAILS,
+  canAccessMonthlyReport,
+  canAccessQualityEval,
 } from "./adminEmails";
 import { isMemberOfAnyGroup } from "./googleGroups";
 
-/** 개인 화이트리스트 또는 CALL_QUALITY_GROUP_EMAILS 멤버십. */
-export async function resolveCanAccessCallQuality(
+// 평가 진행은 도메인 기준(canAccessEvalProgress)이라 Groups 조회가 필요 없다.
+
+/** 평가 설계·품질평가(리포트). */
+export async function resolveCanAccessQualityEval(
   email: string | null | undefined,
 ): Promise<boolean> {
-  if (canAccessCallQuality(email)) return true;
-  return isMemberOfAnyGroup(email, CALL_QUALITY_GROUP_EMAILS);
+  if (canAccessQualityEval(email)) return true;
+  if (QUALITY_EVAL_GROUP_EMAILS.length === 0) return false;
+  return isMemberOfAnyGroup(email, QUALITY_EVAL_GROUP_EMAILS);
 }
 
-export async function resolveCanAccessAnyCallQuality(
+/** 품질평가 > 월간 리포트. quality eval 권한이면 포함. */
+export async function resolveCanAccessMonthlyReport(
   email: string | null | undefined,
 ): Promise<boolean> {
-  if (canAccessPayCallQuality(email)) return true;
-  return resolveCanAccessCallQuality(email);
-}
-
-export async function resolveCanAccessCallQualityObserve(
-  email: string | null | undefined,
-): Promise<boolean> {
-  return resolveCanAccessAnyCallQuality(email);
+  if (canAccessMonthlyReport(email)) return true;
+  if (await resolveCanAccessQualityEval(email)) return true;
+  if (MONTHLY_REPORT_GROUP_EMAILS.length === 0) return false;
+  return isMemberOfAnyGroup(email, MONTHLY_REPORT_GROUP_EMAILS);
 }

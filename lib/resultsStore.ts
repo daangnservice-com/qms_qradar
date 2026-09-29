@@ -1,12 +1,48 @@
+// QMS 사람 평가 결과. 화면 조회는 서빙 Postgres(qms_cases, qms_eval_*)만 친다.
+// 원천은 BQ 결과 뷰와 Karrot 평가 테이블이고 lib/qmsResultsSync.ts 가 가져온다.
+// 당일 평가된 케이스 단건만 스냅샷에 없을 때 BQ Karrot 원천으로 폴백한다.
 import { getBQ } from "./bigquery";
 import { growthBq, karrotCsBq } from "./bqRefs";
+import { servingQuery } from "./servingDb";
 
 const loc = () => (growthBq.location ? { location: growthBq.location } : {});
 
-function viewSql(): string {
-  const sql = growthBq.qmsCasesDetailSql();
-  if (!sql) throw new Error("QMS_CASES_DETAIL_VIEW 가 설정되지 않았습니다");
-  return sql;
+/** BQ 는 문자열을 코드 포인트 순으로 정렬한다. 같은 순서를 내려고 C collation 을 쓴다. */
+const C = `collate "C"`;
+const MONTH = `to_char(year_month, 'YYYY-MM')`;
+const TEAM_EXPR = `coalesce(nullif(trim(team_name), ''), nullif(trim(fallback_current_team_name), ''), team_id::text, '미지정')`;
+const MEMBER_KEY_EXPR = `coalesce(nullif(trim(employee_number), ''), target_admin_user_id::text, nullif(trim(first_name), ''), '미지정')`;
+const MEMBER_LABEL_EXPR = `coalesce(nullif(trim(first_name), ''), target_admin_user_id::text, nullif(trim(employee_number), ''), '미지정')`;
+const TEMPLATE_KEY_EXPR = `coalesce(evaluation_template_id::text, nullif(trim(template_name), ''), '미지정')`;
+const TEMPLATE_LABEL_EXPR = `coalesce(nullif(trim(template_name), ''), evaluation_template_id::text, '미지정')`;
+const EVALUATED = `lower(coalesce(status, '')) = 'evaluated' and lower(coalesce(case_status, '')) = 'evaluated'`;
+
+/** pg 는 date 를 로컬 자정 Date 로 준다. 날짜가 밀리지 않게 문자열로 받는다. */
+const CASE_COLS = `
+  case_id, evaluation_id, evaluation_template_id, evaluation_target_id, template_name,
+  year_month::text as year_month, team_id, team_name, target_admin_user_id, first_name,
+  status, result, evaluated_count, cold_count, extra, employee_number,
+  target_query_started_at::text as target_query_started_at,
+  target_query_ended_at::text as target_query_ended_at,
+  target_query_per_user_limit, evaluation_extra, evaluation_status, case_content, case_status, case_scores,
+  case_result, case_extra, score_detail, memo_detail, fallback_current_team_name
+`;
+
+/** 필터 조건을 $n 파라미터로 쌓는다. */
+function sqlWhere(initial: string[] = []) {
+  const where = [...initial];
+  const values: unknown[] = [];
+  return {
+    where,
+    values,
+    add(sql: string, value: unknown) {
+      values.push(value);
+      where.push(sql.replaceAll("?", `$${values.length}`));
+    },
+    text() {
+      return where.length ? where.join(" and ") : "true";
+    },
+  };
 }
 
 function cellStr(v: unknown): string {
@@ -217,89 +253,36 @@ export async function getResultsOptions(filters?: {
   month?: string;
   team?: string;
 }): Promise<ResultsOptions> {
-  const v = viewSql();
   const month = filters?.month?.trim() || "";
   const team = filters?.team?.trim() || "";
-
-  const where: string[] = ["1=1"];
-  const params: Record<string, string> = {};
-  if (month) {
-    where.push(`FORMAT_DATE('%Y-%m', year_month) = @month`);
-    params.month = month;
-  }
-  if (team) {
-    where.push(
-      `COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정') = @team`,
-    );
-    params.team = team;
-  }
-  const w = where.join(" AND ");
+  const w = sqlWhere();
+  if (month) w.add(`${MONTH} = ?`, month);
+  if (team) w.add(`${TEAM_EXPR} = ?`, team);
 
   const [monthRows, teamRows, memberRows, templateRows] = await Promise.all([
-    getBQ().query({
-      query: `
-        SELECT DISTINCT FORMAT_DATE('%Y-%m', year_month) AS v
-        FROM ${v}
-        WHERE year_month IS NOT NULL
-        ORDER BY v DESC
-      `,
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        SELECT DISTINCT
-          COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정') AS v
-        FROM ${v}
-        WHERE ${w}
-        ORDER BY v
-      `,
-      params,
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        SELECT DISTINCT
-          COALESCE(NULLIF(TRIM(employee_number), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(first_name), ''), '미지정') AS k,
-          COALESCE(NULLIF(TRIM(first_name), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(employee_number), ''), '미지정') AS label
-        FROM ${v}
-        WHERE ${w}
-        ORDER BY label
-      `,
-      params,
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        SELECT DISTINCT
-          COALESCE(CAST(evaluation_template_id AS STRING), NULLIF(TRIM(template_name), ''), '미지정') AS k,
-          COALESCE(NULLIF(TRIM(template_name), ''), CAST(evaluation_template_id AS STRING), '미지정') AS label
-        FROM ${v}
-        WHERE ${w}
-        ORDER BY label
-      `,
-      params,
-      ...loc(),
-    }),
+    servingQuery<{ v: string }>(`
+      select distinct ${MONTH} as v from qms_cases where year_month is not null order by v desc
+    `),
+    servingQuery<{ v: string }>(
+      `select distinct (${TEAM_EXPR}) ${C} as v from qms_cases where ${w.text()} order by v`,
+      w.values,
+    ),
+    servingQuery<{ k: string; label: string }>(
+      `select distinct ${MEMBER_KEY_EXPR} as k, (${MEMBER_LABEL_EXPR}) ${C} as label from qms_cases where ${w.text()} order by label`,
+      w.values,
+    ),
+    servingQuery<{ k: string; label: string }>(
+      `select distinct ${TEMPLATE_KEY_EXPR} as k, (${TEMPLATE_LABEL_EXPR}) ${C} as label from qms_cases where ${w.text()} order by label`,
+      w.values,
+    ),
   ]);
 
-  const months = ((monthRows as unknown[])[0] as { v: string }[]).map((r) => ({
-    value: String(r.v),
-    label: String(r.v),
-  }));
-  const teams = ((teamRows as unknown[])[0] as { v: string }[]).map((r) => ({
-    value: String(r.v),
-    label: String(r.v),
-  }));
-  const members = ((memberRows as unknown[])[0] as { k: string; label: string }[]).map((r) => ({
-    value: String(r.k),
-    label: String(r.label),
-  }));
-  const templates = ((templateRows as unknown[])[0] as { k: string; label: string }[]).map((r) => ({
-    value: String(r.k),
-    label: String(r.label),
-  }));
-
-  return { months, teams, members, templates };
+  return {
+    months: monthRows.map((r) => ({ value: String(r.v), label: String(r.v) })),
+    teams: teamRows.map((r) => ({ value: String(r.v), label: String(r.v) })),
+    members: memberRows.map((r) => ({ value: String(r.k), label: String(r.label) })),
+    templates: templateRows.map((r) => ({ value: String(r.k), label: String(r.label) })),
+  };
 }
 
 export async function listResultsCases(filters: {
@@ -313,63 +296,37 @@ export async function listResultsCases(filters: {
 }): Promise<{ rows: QmsCaseRow[]; truncated: boolean }> {
   const month = filters.month?.trim() || "";
   const limit = Math.min(Math.max(filters.limit ?? (month ? 800 : 20000), 1), 20000);
-  const v = viewSql();
-  const where: string[] = [
-    `LOWER(IFNULL(status, '')) = 'evaluated'`,
-    `LOWER(IFNULL(case_status, '')) = 'evaluated'`,
-  ];
-  const params: Record<string, string | boolean | number> = { limit: limit + 1 };
-  if (month) {
-    where.push(`FORMAT_DATE('%Y-%m', year_month) = @month`);
-    params.month = month;
-  }
-
-  if (filters.team?.trim()) {
-    where.push(
-      `COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정') = @team`,
-    );
-    params.team = filters.team.trim();
-  }
-  if (filters.member?.trim()) {
-    where.push(
-      `COALESCE(NULLIF(TRIM(employee_number), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(first_name), ''), '미지정') = @member`,
-    );
-    params.member = filters.member.trim();
-  }
-  if (filters.template?.trim()) {
-    where.push(
-      `COALESCE(CAST(evaluation_template_id AS STRING), NULLIF(TRIM(template_name), ''), '미지정') = @template`,
-    );
-    params.template = filters.template.trim();
-  }
-  if (filters.wrongOnly) {
-    where.push(`NULLIF(TRIM(score_detail), '') IS NOT NULL`);
-  }
+  const w = sqlWhere([EVALUATED]);
+  if (month) w.add(`${MONTH} = ?`, month);
+  if (filters.team?.trim()) w.add(`${TEAM_EXPR} = ?`, filters.team.trim());
+  if (filters.member?.trim()) w.add(`${MEMBER_KEY_EXPR} = ?`, filters.member.trim());
+  if (filters.template?.trim()) w.add(`${TEMPLATE_KEY_EXPR} = ?`, filters.template.trim());
+  if (filters.wrongOnly) w.where.push(`nullif(trim(score_detail), '') is not null`);
   if (filters.q?.trim()) {
-    where.push(`(
-      STRPOS(LOWER(IFNULL(case_content, '')), LOWER(@q)) > 0
-      OR STRPOS(LOWER(IFNULL(memo_detail, '')), LOWER(@q)) > 0
-      OR STRPOS(LOWER(IFNULL(score_detail, '')), LOWER(@q)) > 0
-      OR STRPOS(LOWER(IFNULL(first_name, '')), LOWER(@q)) > 0
-      OR STRPOS(CAST(case_id AS STRING), @q) > 0
-    )`);
-    params.q = filters.q.trim();
+    w.add(
+      `(
+        strpos(lower(coalesce(case_content, '')), lower(?)) > 0
+        or strpos(lower(coalesce(memo_detail, '')), lower(?)) > 0
+        or strpos(lower(coalesce(score_detail, '')), lower(?)) > 0
+        or strpos(lower(coalesce(first_name, '')), lower(?)) > 0
+        or strpos(case_id::text, ?) > 0
+      )`,
+      filters.q.trim(),
+    );
   }
-
-  const [rawRows] = await getBQ().query({
-    query: `
-      SELECT *
-      FROM ${v}
-      WHERE ${where.join(" AND ")}
-      ORDER BY year_month DESC, team_name, first_name, case_id
-      LIMIT @limit
+  w.values.push(limit + 1);
+  const rawRows = await servingQuery<Record<string, unknown>>(
+    `
+    select ${CASE_COLS}
+    from qms_cases
+    where ${w.text()}
+    order by year_month desc, team_name ${C} nulls first, first_name ${C} nulls first, case_id
+    limit $${w.values.length}
     `,
-    params,
-    types: { limit: "INT64" },
-    ...loc(),
-  });
+    w.values,
+  );
 
-  const list = (rawRows as Record<string, unknown>[]).map(mapCaseRow);
+  const list = rawRows.map(mapCaseRow);
   const truncated = list.length > limit;
   return { rows: truncated ? list.slice(0, limit) : list, truncated };
 }
@@ -378,40 +335,26 @@ export async function getResultsAggregate(filters: {
   month?: string;
   team?: string;
 }): Promise<ResultsAggregateResponse> {
-  const v = viewSql();
-  const where: string[] = ["1=1"];
-  const params: Record<string, string> = {};
-  if (filters.month?.trim()) {
-    where.push(`FORMAT_DATE('%Y-%m', year_month) = @month`);
-    params.month = filters.month.trim();
-  }
-  if (filters.team?.trim()) {
-    where.push(
-      `COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정') = @team`,
-    );
-    params.team = filters.team.trim();
-  }
+  const w = sqlWhere([`year_month is not null`, EVALUATED]);
+  if (filters.month?.trim()) w.add(`${MONTH} = ?`, filters.month.trim());
+  if (filters.team?.trim()) w.add(`${TEAM_EXPR} = ?`, filters.team.trim());
 
-  const [rawRows] = await getBQ().query({
-    query: `
-      SELECT
-        FORMAT_DATE('%Y-%m', year_month) AS month_key,
-        COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정') AS team_key,
-        COALESCE(NULLIF(TRIM(employee_number), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(first_name), ''), '미지정') AS member_key,
-        COALESCE(NULLIF(TRIM(first_name), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(employee_number), ''), '미지정') AS member_label,
-        COUNT(*) AS case_count,
-        COUNTIF(LOWER(TRIM(IFNULL(result, ''))) = 'cold') AS cold_count
-      FROM ${v}
-      WHERE ${where.join(" AND ")}
-        AND year_month IS NOT NULL
-        AND LOWER(IFNULL(status, '')) = 'evaluated'
-        AND LOWER(IFNULL(case_status, '')) = 'evaluated'
-      GROUP BY month_key, team_key, member_key, member_label
-      ORDER BY month_key DESC, team_key, member_label
+  const rawRows = await servingQuery(
+    `
+    select
+      ${MONTH} as month_key,
+      (${TEAM_EXPR}) ${C} as team_key,
+      ${MEMBER_KEY_EXPR} as member_key,
+      (${MEMBER_LABEL_EXPR}) ${C} as member_label,
+      count(*)::int as case_count,
+      (count(*) filter (where lower(trim(coalesce(result, ''))) = 'cold'))::int as cold_count
+    from qms_cases
+    where ${w.text()}
+    group by 1, 2, 3, 4
+    order by month_key desc, team_key, member_label
     `,
-    params,
-    ...loc(),
-  });
+    w.values,
+  );
 
   type AggRow = {
     month_key: string;
@@ -1008,12 +951,9 @@ function emptyUnconfirmed(month: string, source: UnconfirmedCurrentMonth["source
   };
 }
 
-async function seoulYearMonth(): Promise<string> {
-  const [rows] = await getBQ().query({
-    query: `SELECT FORMAT_DATE('%Y-%m', CURRENT_DATE('Asia/Seoul')) AS ym`,
-    ...loc(),
-  });
-  return String((rows as { ym: string }[])[0]?.ym ?? "");
+/** 서울 기준 현재 연월 (YYYY-MM). */
+export function seoulYearMonth(now = new Date()): string {
+  return new Date(now.getTime() + 9 * 3600_000).toISOString().slice(0, 7);
 }
 
 function mapUnconfirmedPayload(
@@ -1050,91 +990,99 @@ function mapUnconfirmedPayload(
   };
 }
 
-const TEAM_EXPR = `COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정')`;
-const TEMPLATE_ID_EXPR = `COALESCE(CAST(evaluation_template_id AS STRING), NULLIF(TRIM(template_name), ''), '미지정')`;
-const TEMPLATE_NAME_EXPR = `COALESCE(NULLIF(TRIM(template_name), ''), CAST(evaluation_template_id AS STRING), '미지정')`;
-const TARGET_NAME_EXPR = `COALESCE(NULLIF(TRIM(first_name), ''), CAST(target_admin_user_id AS STRING), CAST(evaluation_target_id AS STRING), '미지정')`;
-
-async function unconfirmedFromView(month: string, detail: boolean, openOnly: boolean): Promise<UnconfirmedCurrentMonth> {
-  const v = viewSql();
-  const [totRes, stRes, leafRes] = await Promise.all([
-    getBQ().query({
-      query: `
-        SELECT
-          COUNT(DISTINCT evaluation_id) AS eval_count,
-          COUNT(DISTINCT IF(LOWER(IFNULL(evaluation_status, '')) <> 'confirmed', evaluation_id, NULL)) AS open_evals,
-          COUNT(DISTINCT evaluation_target_id) AS target_count,
-          COUNT(DISTINCT IF(LOWER(IFNULL(status, '')) <> 'evaluated', evaluation_target_id, NULL)) AS open_targets,
-          COUNT(DISTINCT case_id) AS case_count,
-          COUNT(DISTINCT IF(LOWER(IFNULL(case_status, '')) <> 'evaluated', case_id, NULL)) AS open_cases
-        FROM ${v}
-        WHERE FORMAT_DATE('%Y-%m', year_month) = @month
+/**
+ * 월별 평가 진행 현황.
+ * 진행 상태는 Karrot 원천 사본(qms_eval_*, 증분 주기마다 갱신)으로, 팀·이름은 결과 뷰 사본(qms_cases, 야간)으로 붙인다.
+ * 케이스가 있는 평가만 센다(결과 뷰와 같은 기준 — 월별 건수가 뷰와 같음을 확인했다).
+ */
+async function unconfirmedFromServing(month: string, detail: boolean, openOnly: boolean): Promise<UnconfirmedCurrentMonth> {
+  const joined = `
+    qms_eval_cases c
+    join qms_eval_targets t on t.id = c.evaluation_target_id
+    join qms_eval_evaluations ev on ev.id = t.evaluation_id
+  `;
+  const inMonth = `to_char(ev.year_month, 'YYYY-MM') = $1`;
+  const [totRows, stRows, leafRows] = await Promise.all([
+    servingQuery<{
+      eval_count: number;
+      open_evals: number;
+      target_count: number;
+      open_targets: number;
+      case_count: number;
+      open_cases: number;
+    }>(
+      `
+      select
+        count(distinct ev.id)::int as eval_count,
+        count(distinct ev.id) filter (where lower(coalesce(ev.status, '')) <> 'confirmed')::int as open_evals,
+        count(distinct t.id)::int as target_count,
+        count(distinct t.id) filter (where lower(coalesce(t.status, '')) <> 'evaluated')::int as open_targets,
+        count(distinct c.id)::int as case_count,
+        count(distinct c.id) filter (where lower(coalesce(c.status, '')) <> 'evaluated')::int as open_cases
+      from ${joined}
+      where ${inMonth}
       `,
-      params: { month },
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        SELECT evaluation_status AS status, COUNT(DISTINCT evaluation_id) AS n
-        FROM ${v}
-        WHERE FORMAT_DATE('%Y-%m', year_month) = @month
-        GROUP BY 1
-        ORDER BY n DESC
+      [month],
+    ),
+    servingQuery<{ status: string; n: number }>(
+      `
+      select ev.status, count(distinct ev.id)::int as n
+      from ${joined}
+      where ${inMonth}
+      group by 1
+      order by n desc
       `,
-      params: { month },
-      ...loc(),
-    }),
+      [month],
+    ),
     detail
-      ? getBQ().query({
-          query: `
-            ${
-              openOnly
-                ? `WITH open_evals AS (
-              SELECT DISTINCT evaluation_id
-              FROM ${v}
-              WHERE FORMAT_DATE('%Y-%m', year_month) = @month
-                AND (
-                  LOWER(IFNULL(evaluation_status, '')) <> 'confirmed'
-                  OR LOWER(IFNULL(status, '')) <> 'evaluated'
-                  OR LOWER(IFNULL(case_status, '')) <> 'evaluated'
-                )
-            )`
-                : ""
-            }
-            SELECT
-              ${TEAM_EXPR} AS team_name,
-              ${TEMPLATE_ID_EXPR} AS template_id,
-              ANY_VALUE(${TEMPLATE_NAME_EXPR}) AS template_name,
-              CAST(evaluation_id AS STRING) AS evaluation_id,
-              ANY_VALUE(JSON_VALUE(evaluation_extra, '$.title')) AS evaluation_name,
-              ANY_VALUE(evaluation_status) AS eval_status,
-              CAST(evaluation_target_id AS STRING) AS target_id,
-              ANY_VALUE(${TARGET_NAME_EXPR}) AS target_name,
-              ANY_VALUE(status) AS target_status,
-              CAST(case_id AS STRING) AS case_id,
-              ANY_VALUE(case_status) AS case_status
-            FROM ${v}
-            WHERE FORMAT_DATE('%Y-%m', year_month) = @month
-              ${openOnly ? "AND evaluation_id IN (SELECT evaluation_id FROM open_evals)" : ""}
-            GROUP BY 1, 2, 4, 7, 10
-            ORDER BY 1, 3, 4, 8, 10
-            LIMIT ${UNCONFIRMED_LEAF_LIMIT}
+      ? servingQuery<UnconfirmedLeaf>(
+          `
+          ${
+            openOnly
+              ? `with open_evals as (
+            select distinct ev.id
+            from ${joined}
+            where ${inMonth}
+              and (
+                lower(coalesce(ev.status, '')) <> 'confirmed'
+                or lower(coalesce(t.status, '')) <> 'evaluated'
+                or lower(coalesce(c.status, '')) <> 'evaluated'
+              )
+          )`
+              : ""
+          }
+          select
+            coalesce(team.label, ev.team_id::text, '미지정') ${C} as team_name,
+            coalesce(ev.evaluation_template_id::text, nullif(trim(tem.name), ''), '미지정') as template_id,
+            coalesce(nullif(trim(tem.name), ''), ev.evaluation_template_id::text, '미지정') ${C} as template_name,
+            ev.id::text ${C} as evaluation_id,
+            ev.title as evaluation_name,
+            ev.status as eval_status,
+            t.id::text as target_id,
+            coalesce(person.first_name, t.target_admin_user_id::text, t.id::text, '미지정') ${C} as target_name,
+            t.status as target_status,
+            c.id::text ${C} as case_id,
+            c.status as case_status
+          from ${joined}
+          left join qms_eval_templates tem on tem.id = ev.evaluation_template_id
+          left join lateral (
+            select ${TEAM_EXPR} as label from qms_cases q where q.evaluation_id = ev.id limit 1
+          ) team on true
+          left join lateral (
+            select nullif(trim(q.first_name), '') as first_name from qms_cases q
+            where q.evaluation_target_id = t.id and nullif(trim(q.first_name), '') is not null
+            limit 1
+          ) person on true
+          where ${inMonth}
+            ${openOnly ? "and ev.id in (select id from open_evals)" : ""}
+          order by 1, 3, 4, 8, 10
+          limit ${UNCONFIRMED_LEAF_LIMIT}
           `,
-          params: { month },
-          ...loc(),
-        })
-      : Promise.resolve([[] as UnconfirmedLeaf[]]),
+          [month],
+        )
+      : Promise.resolve([] as UnconfirmedLeaf[]),
   ]);
-  type Totals = {
-    eval_count: number;
-    open_evals: number;
-    target_count: number;
-    open_targets: number;
-    case_count: number;
-    open_cases: number;
-  };
-  const totRows = (totRes as unknown[])[0] as Totals[];
-  const leafRows = ((leafRes as unknown[])[0] as UnconfirmedLeaf[]) || [];
+  // 건수·트리는 결과 뷰와 같은 기준이라 응답 표기는 그대로 둔다.
   return mapUnconfirmedPayload(
     month,
     "view",
@@ -1146,148 +1094,24 @@ async function unconfirmedFromView(month: string, detail: boolean, openOnly: boo
       case_count: 0,
       open_cases: 0,
     },
-    ((stRes as unknown[])[0] as { status: string; n: number }[]) || [],
+    stRows,
     leafRows,
     leafRows.length >= UNCONFIRMED_LEAF_LIMIT,
   );
 }
 
-async function unconfirmedFromKarrot(month: string, detail: boolean, openOnly: boolean): Promise<UnconfirmedCurrentMonth> {
-  const e = karrotCsBq.sql("evaluations");
-  const et = karrotCsBq.sql("evaluation_targets");
-  const ec = karrotCsBq.sql("evaluation_cases");
-  const tem = karrotCsBq.sql("evaluation_templates");
-
-  const [totRes, stRes, leafRes] = await Promise.all([
-    getBQ().query({
-      query: `
-        WITH ev AS (
-          SELECT id, status
-          FROM ${e}
-          WHERE FORMAT_DATE('%Y-%m', year_month) = @month
-        )
-        SELECT
-          (SELECT COUNT(*) FROM ev) AS eval_count,
-          (SELECT COUNT(*) FROM ev WHERE LOWER(IFNULL(status, '')) <> 'confirmed') AS open_evals,
-          (SELECT COUNT(*) FROM ${et} t JOIN ev ON ev.id = t.evaluation_id) AS target_count,
-          (SELECT COUNT(*) FROM ${et} t JOIN ev ON ev.id = t.evaluation_id
-            WHERE LOWER(IFNULL(t.status, '')) <> 'evaluated') AS open_targets,
-          (SELECT COUNT(*) FROM ${ec} c
-            JOIN ${et} t ON t.id = c.evaluation_target_id
-            JOIN ev ON ev.id = t.evaluation_id) AS case_count,
-          (SELECT COUNT(*) FROM ${ec} c
-            JOIN ${et} t ON t.id = c.evaluation_target_id
-            JOIN ev ON ev.id = t.evaluation_id
-            WHERE LOWER(IFNULL(c.status, '')) <> 'evaluated') AS open_cases
-      `,
-      params: { month },
-      ...loc(),
-    }),
-    getBQ().query({
-      query: `
-        SELECT status, COUNT(*) AS n
-        FROM ${e}
-        WHERE FORMAT_DATE('%Y-%m', year_month) = @month
-        GROUP BY 1
-        ORDER BY n DESC
-      `,
-      params: { month },
-      ...loc(),
-    }),
-    detail
-      ? getBQ().query({
-          query: `
-            ${
-              openOnly
-                ? `WITH open_evals AS (
-              SELECT DISTINCT ev.id AS evaluation_id
-              FROM ${e} ev
-              LEFT JOIN ${et} t ON t.evaluation_id = ev.id
-              LEFT JOIN ${ec} c ON c.evaluation_target_id = t.id
-              WHERE FORMAT_DATE('%Y-%m', ev.year_month) = @month
-                AND (
-                  LOWER(IFNULL(ev.status, '')) <> 'confirmed'
-                  OR LOWER(IFNULL(t.status, '')) <> 'evaluated'
-                  OR LOWER(IFNULL(c.status, '')) <> 'evaluated'
-                )
-            )`
-                : ""
-            }
-            SELECT
-              '미지정' AS team_name,
-              CAST(IFNULL(ev.evaluation_template_id, '') AS STRING) AS template_id,
-              IFNULL(tem.name, CAST(ev.evaluation_template_id AS STRING)) AS template_name,
-              CAST(ev.id AS STRING) AS evaluation_id,
-              JSON_VALUE(ev.extra, '$.title') AS evaluation_name,
-              ev.status AS eval_status,
-              CAST(t.id AS STRING) AS target_id,
-              CAST(IFNULL(t.target_admin_user_id, t.id) AS STRING) AS target_name,
-              t.status AS target_status,
-              CAST(c.id AS STRING) AS case_id,
-              c.status AS case_status
-            FROM ${e} ev
-            LEFT JOIN ${tem} tem ON tem.id = ev.evaluation_template_id
-            LEFT JOIN ${et} t ON t.evaluation_id = ev.id
-            LEFT JOIN ${ec} c ON c.evaluation_target_id = t.id
-            WHERE FORMAT_DATE('%Y-%m', ev.year_month) = @month
-              ${openOnly ? "AND ev.id IN (SELECT evaluation_id FROM open_evals)" : ""}
-            ORDER BY template_name, evaluation_id, target_id, case_id
-            LIMIT ${UNCONFIRMED_LEAF_LIMIT}
-          `,
-          params: { month },
-          ...loc(),
-        })
-      : Promise.resolve([[] as UnconfirmedLeaf[]]),
-  ]);
-
-  const totals = ((totRes as unknown[])[0] as Array<{
-    eval_count: number;
-    open_evals: number;
-    target_count: number;
-    open_targets: number;
-    case_count: number;
-    open_cases: number;
-  }>)[0];
-  const leafRows = ((leafRes as unknown[])[0] as UnconfirmedLeaf[]) || [];
-
-  return mapUnconfirmedPayload(
-    month,
-    "karrot",
-    totals ?? {
-      eval_count: 0,
-      open_evals: 0,
-      target_count: 0,
-      open_targets: 0,
-      case_count: 0,
-      open_cases: 0,
-    },
-    ((stRes as unknown[])[0] as { status: string; n: number }[]) || [],
-    leafRows,
-    leafRows.length >= UNCONFIRMED_LEAF_LIMIT,
-  );
-}
-
-/** 월별 평가 현황. 뷰 우선, 실패 시 Karrot 원천. */
+/** 월별 평가 현황. */
 export async function getUnconfirmedMonth(
   month?: string,
   opts?: { detail?: boolean; openOnly?: boolean },
 ): Promise<UnconfirmedCurrentMonth> {
-  const current = await seoulYearMonth();
-  const ym = parseYearMonth(month) || current;
-  if (!ym) return emptyUnconfirmed("");
+  const ym = parseYearMonth(month) || seoulYearMonth();
   const detail = opts?.detail !== false;
   const openOnly = opts?.openOnly !== false;
-
   try {
-    return await unconfirmedFromView(ym, detail, openOnly);
+    return await unconfirmedFromServing(ym, detail, openOnly);
   } catch (e) {
-    console.warn("[resultsStore] unconfirmed via view failed, falling back to karrot", e);
-  }
-
-  try {
-    return await unconfirmedFromKarrot(ym, detail, openOnly);
-  } catch (e) {
-    console.warn("[resultsStore] unconfirmed via karrot failed", e);
+    console.warn("[resultsStore] unconfirmed failed", e);
     return emptyUnconfirmed(ym);
   }
 }
@@ -1302,47 +1126,17 @@ export type EvalStatusResponse = UnconfirmedCurrentMonth & { months: string[] };
 async function listEvalStatusMonths(current: string): Promise<string[]> {
   const set = new Set<string>();
   if (current) set.add(current);
-  try {
-    const v = viewSql();
-    const [rows] = await getBQ().query({
-      query: `
-        SELECT DISTINCT FORMAT_DATE('%Y-%m', year_month) AS v
-        FROM ${v}
-        WHERE year_month IS NOT NULL
-        ORDER BY v DESC
-      `,
-      ...loc(),
-    });
-    for (const r of (rows as { v: string }[]) || []) {
-      const ym = String(r.v || "");
-      if (ym) set.add(ym);
-    }
-  } catch (e) {
-    console.warn("[resultsStore] eval status months via view failed", e);
-  }
-  try {
-    const e = karrotCsBq.sql("evaluations");
-    const [rows] = await getBQ().query({
-      query: `
-        SELECT DISTINCT FORMAT_DATE('%Y-%m', year_month) AS v
-        FROM ${e}
-        WHERE year_month IS NOT NULL
-        ORDER BY v DESC
-      `,
-      ...loc(),
-    });
-    for (const r of (rows as { v: string }[]) || []) {
-      const ym = String(r.v || "");
-      if (ym) set.add(ym);
-    }
-  } catch (e) {
-    console.warn("[resultsStore] eval status months via karrot failed", e);
-  }
+  const rows = await servingQuery<{ v: string }>(`
+    select distinct ${MONTH} as v from qms_cases where year_month is not null
+    union
+    select distinct to_char(year_month, 'YYYY-MM') from qms_eval_evaluations where year_month is not null
+  `);
+  for (const r of rows) if (r.v) set.add(r.v);
   return [...set].sort((a, b) => b.localeCompare(a));
 }
 
 export async function getEvalStatus(month?: string): Promise<EvalStatusResponse> {
-  const current = await seoulYearMonth();
+  const current = seoulYearMonth();
   const ym = parseYearMonth(month) || current;
   const [data, months] = await Promise.all([
     getUnconfirmedMonth(ym, { detail: true, openOnly: false }),
@@ -1354,19 +1148,17 @@ export async function getEvalStatus(month?: string): Promise<EvalStatusResponse>
 
 export async function getResultsCaseById(caseId: string): Promise<QmsCaseRow | null> {
   const id = caseId.trim();
-  if (!id) return null;
+  if (!/^\d+$/.test(id)) return null;
   try {
-    const v = viewSql();
-    const [rows] = await getBQ().query({
-      query: `SELECT * FROM ${v} WHERE CAST(case_id AS STRING) = @caseId LIMIT 1`,
-      params: { caseId: id },
-      ...loc(),
-    });
-    const raw = (rows as Record<string, unknown>[])[0];
-    if (raw) return mapCaseRow(raw);
+    const rows = await servingQuery<Record<string, unknown>>(
+      `select ${CASE_COLS} from qms_cases where case_id = $1::bigint`,
+      [id],
+    );
+    if (rows[0]) return mapCaseRow(rows[0]);
   } catch (e) {
-    console.warn("[resultsStore] case via view failed", e);
+    console.warn("[resultsStore] case via serving failed", e);
   }
+  // 야간 스냅샷 뒤에 평가된 케이스. 원천을 바로 본다.
   try {
     const e = karrotCsBq.sql("evaluations");
     const et = karrotCsBq.sql("evaluation_targets");
@@ -1439,18 +1231,10 @@ export async function getQualityReport(opts?: {
     toYm = null;
   }
 
-  const v = viewSql();
-
-  const [[monthRes], unconfirmed] = await Promise.all([
-    getBQ().query({
-      query: `
-        SELECT DISTINCT FORMAT_DATE('%Y-%m', year_month) AS v
-        FROM ${v}
-        WHERE year_month IS NOT NULL
-        ORDER BY v DESC
-      `,
-      ...loc(),
-    }),
+  const [monthRes, unconfirmed] = await Promise.all([
+    servingQuery<{ v: string }>(
+      `select distinct ${MONTH} as v from qms_cases where year_month is not null order by v desc`,
+    ),
     getUnconfirmedCurrentMonth(),
   ]);
   const allMonthsDesc = ((monthRes as { v: string }[]) || []).map((r) => String(r.v));
@@ -1506,35 +1290,31 @@ export async function getQualityReport(opts?: {
   const sqlFrom =
     prevMonthKey && prevMonthKey < fromMonth ? prevMonthKey : fromMonth;
 
-  const teamExpr = `COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정')`;
-  const memberExpr = `COALESCE(NULLIF(TRIM(employee_number), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(first_name), ''), '미지정')`;
-  const sheetExpr = `COALESCE(NULLIF(TRIM(template_name), ''), CAST(evaluation_template_id AS STRING), '미지정')`;
-  const caseKindExpr = `LOWER(TRIM(IFNULL(NULLIF(TRIM(case_result), ''), IFNULL(result, ''))))`;
+  const caseKindExpr = `lower(trim(coalesce(nullif(trim(case_result), ''), coalesce(result, ''))))`;
 
-  const [aggRes] = await getBQ().query({
-    query: `
-      SELECT
-        FORMAT_DATE('%Y-%m', year_month) AS month_key,
-        ${teamExpr} AS team_label,
-        ${sheetExpr} AS template_label,
-        ${memberExpr} AS member_key,
-        CAST(evaluation_target_id AS STRING) AS evaluation_target_id,
-        ANY_VALUE(LOWER(TRIM(IFNULL(result, '')))) AS target_result,
-        COUNT(*) AS case_count,
-        COUNTIF(${caseKindExpr} = 'hot') AS hot_cases,
-        COUNTIF(${caseKindExpr} = 'cold') AS cold_cases,
-        COUNTIF(${caseKindExpr} = 'melt') AS melt_cases
-      FROM ${v}
-      WHERE year_month IS NOT NULL
-        AND FORMAT_DATE('%Y-%m', year_month) >= @sqlFrom
-        AND FORMAT_DATE('%Y-%m', year_month) <= @sqlTo
-        AND LOWER(IFNULL(status, '')) = 'evaluated'
-        AND LOWER(IFNULL(case_status, '')) = 'evaluated'
-      GROUP BY 1, 2, 3, 4, 5
+  const aggRes = await servingQuery(
+    `
+    select
+      ${MONTH} as month_key,
+      ${TEAM_EXPR} as team_label,
+      ${TEMPLATE_LABEL_EXPR} as template_label,
+      ${MEMBER_KEY_EXPR} as member_key,
+      evaluation_target_id::text as evaluation_target_id,
+      min(lower(trim(coalesce(result, '')))) as target_result,
+      count(*)::int as case_count,
+      (count(*) filter (where ${caseKindExpr} = 'hot'))::int as hot_cases,
+      (count(*) filter (where ${caseKindExpr} = 'cold'))::int as cold_cases,
+      (count(*) filter (where ${caseKindExpr} = 'melt'))::int as melt_cases
+    from qms_cases
+    where year_month is not null
+      and ${MONTH} >= $1
+      and ${MONTH} <= $2
+      and ${EVALUATED}
+    group by 1, 2, 3, 4, 5
+    order by 1, 2, 3, 4, 5
     `,
-    params: { sqlFrom, sqlTo },
-    ...loc(),
-  });
+    [sqlFrom, sqlTo],
+  );
 
   type AggRow = {
     month_key: string;

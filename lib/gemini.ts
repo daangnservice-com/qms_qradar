@@ -88,7 +88,7 @@ export function buildEvaluationPrompt(
     const useCl = checklist && promptConfig.version.useChecklist;
     const crit = criteria ?? promptConfig.criteria;
     const checklistBlock = useCl
-      ? buildChecklistBlock(promptConfig.version.checklistTemplate, crit)
+      ? buildChecklistBlock(promptConfig.version.checklistTemplate, crit, promptConfig.fieldKeys)
       : "";
     const schemaVars = outputSchemaPromptVars(promptConfig.version.outputSchemaConfig ?? DEFAULT_OUTPUT_SCHEMA_CONFIG);
     return renderTemplate(promptConfig.version.basePrompt, {
@@ -432,7 +432,7 @@ export function buildTextEvaluationPrompt(
   const schemaVars = outputSchemaPromptVars(schemaCfg);
   const checklistBlock =
     checklist && config
-      ? buildChecklistBlock(config.version.checklistTemplate, criteria ?? config.criteria)
+      ? buildChecklistBlock(config.version.checklistTemplate, criteria ?? config.criteria, config.fieldKeys)
       : checklist
         ? buildChecklistBlock(DEFAULT_TEXT_CHECKLIST_TEMPLATE, criteria ?? [], undefined)
         : "";

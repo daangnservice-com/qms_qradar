@@ -3,7 +3,7 @@
 기준일: **2026-08-26**. MCP 3차 발표(2026-07 말, 콜 분석 E2E) 이후 운영 투입·피드백을 반영한 스냅샷.  
 시각 보드: Cursor canvas `qradar-status-timeline.canvas.tsx`.
 
-프로덕션: `https://helpdesk-x.daangnservice.com` · 권한은 이메일 화이트리스트(`lib/adminEmails.ts`).
+2026-08-26 스냅샷의 프로덕션 서술은 helpdesk-x EC2다. 지금은 `qms_qradar` 로컬 Next가 프로덕션이고, 콜·인앱 문의의 온디맨드 저장은 Postgres다. 권한은 이메일 화이트리스트(`lib/adminEmails.ts`). 저장 역할은 [서빙 DB](system/serving-db.md).
 
 ---
 
@@ -22,25 +22,25 @@ MCP 3차 시점의 QRadar는 **콜 1건을 골라 Genesys→STT→Gemini CS 체�
 
 ## 1. 현재 형태 — 구현된 것
 
-구성원이 실제 평가에 쓰는 경로. 데이터는 BigQuery(`ds_qradar_{dev|prod}` + `ds_growth_culture`).
+구성원이 실제 평가에 쓰는 경로. 2026-08-26에는 화면 데이터가 BigQuery(`ds_qradar_{dev|prod}` + `ds_growth_culture`)였다. 콜 목록·단건·검수와 인앱 문의 본문은 이후 Postgres로 옮겼다. 설계·운영·리포트의 일부 조회는 아직 BigQuery다.
 
 ### 평가 진행
 
 | 화면 | 라우트 | 상태 | 하는 일 |
 |---|---|---|---|
-| 전체 평가 | `/call-quality` | **운영** | 샘플 필터 → Genesys 녹취 → Google STT(듀얼채널) → Gemini 체크리스트 → 수기 검수 → BQ 저장·공유 |
+| 전체 평가 | `/call-quality` | **운영** | 샘플 필터 → Genesys 녹취 → Google STT(듀얼채널) → Gemini 체크리스트 → 수기 검수 → Postgres 저장·공유. BQ는 원천 pull과 덤프 |
 | 고위험군 평가 | `/call-quality/high-risk` | **운영** | 동일 워크벤치, 고위험 플래그 필터 ON |
 | 수기 평가 필요 | `/call-quality/needs-review` | **운영** | AI 완료 · 검수 미완료만 |
 | 결과 공유 | `/call-quality/result/[id]` | **운영** | `analysis_id` 딥링크 |
 
 핵심 파이프라인(MCP 3차 산출물, 이후 검수·워크벤치로 확장):
 
-1. BQ `qradar_evaluation_cases`에서 통화 선택  
+1. Postgres `call_serving`(원천은 BQ `qradar_evaluation_cases_flat` pull)에서 통화 선택  
 2. Genesys 단건 recording → WAV  
 3. STT `longRunningRecognize` 듀얼채널 + 무발화 공백  
 4. production 평가표 + Gemini 2.5 Flash  
 5. STT 위 수기 정정 → 「검수 완료」(`human_result` / `match`)  
-6. `qradar_evaluation_results` 저장. 오디오는 영구 저장하지 않음. PII 마스킹.
+6. Postgres `serving_eval_results`에 저장. BQ `qradar_evaluation_results`는 덤프 대상. 오디오는 영구 저장하지 않음. PII 마스킹.
 
 ### 평가 운영
 
@@ -205,5 +205,6 @@ P0 문서 → P1 적재 → P2 결과 읽기 → P3–P4 배분 → P4b 스케�
 - [00-overview.md](00-overview.md) — IA · 라우트 매핑
 - [01-judgment-model.md](01-judgment-model.md) — Hot/Cold · Gate
 - [glossary.md](glossary.md)
+- [system/serving-db.md](system/serving-db.md) — Postgres · BigQuery 역할
 - [../helpdesk-x_서비스구조.md](../helpdesk-x_서비스구조.md) — 파이프라인 · API · 로드맵
 - [../README.md](../README.md) — 실행·배포·비용

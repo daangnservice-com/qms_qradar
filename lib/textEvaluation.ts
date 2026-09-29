@@ -1,9 +1,11 @@
 import { runGeminiTextEvaluation, type GeminiScoring } from "./gemini";
-import { getProductionPrompt, type PromptConfig } from "./promptStore";
+import { getProductionPrompt, validatePromptVersionChannels, type PromptConfig } from "./promptStore";
+import { promptChannelForTemplateKey } from './promptDefaults';
+import { validateChecklistCoverage } from './checklistCoverage';
 import { templateKeyForChannel } from "./promptDefaults";
 import { maskPII } from "./pii";
 import { listHighRiskFlagRules } from "./highRiskFlagStore";
-import { matchMetricHighRiskFlags } from "./highRiskFlags";
+import { matchFeedbackHighRiskFlags, matchMetricHighRiskFlags } from "./highRiskFlags";
 import { snapshotOutputSchema } from "./outputSchema";
 import type { Evaluation, EvaluationResult, MetricDetail, ScoreDetail } from "./types";
 import type { EvaluationChannel, EvaluationTurn } from "./evaluationChannel";
@@ -55,13 +57,18 @@ export async function evaluateText(
     sourceSystem: string;
     sourceId: string;
     promptConfig?: PromptConfig | null;
+    /** 인앱 문의 건수 플래그. 목록과 같은 규칙으로 평가 결과에도 붙인다. */
+    threadCounts?: { feedbackCount: number; replyCount: number };
   },
 ): Promise<EvaluationResult & { promptConfig?: PromptConfig; llmCallId?: string | null }> {
   if (!turns.length) throw new Error("평가할 대화 원문이 없습니다.");
   const promptConfig =
     opts.promptConfig ?? (await getProductionPrompt(templateKeyForChannel(opts.channel)));
   const useChecklist = promptConfig.version.useChecklist;
-  const criteria = useChecklist ? promptConfig.criteria : undefined;
+  if (promptChannelForTemplateKey(promptConfig.version.templateKey) !== opts.channel) throw new Error('평가 채널과 평가셋 채널이 다릅니다');
+  const frozenCriteria = await validatePromptVersionChannels(promptConfig.version);
+  const criteria = useChecklist ? frozenCriteria ?? promptConfig.criteria : undefined;
+  if (useChecklist && !frozenCriteria) validateChecklistCoverage(criteria ?? [], promptConfig.version.criterionBindings.filter((b) => b.enabled).map((b) => b.criterionId));
   let scoring: GeminiScoring;
   try {
     scoring = await runGeminiTextEvaluation(turns, {
@@ -74,10 +81,16 @@ export async function evaluateText(
   } catch (error) {
     scoring = emptyScoring(error instanceof Error ? error.message : String(error));
   }
+  // Reject incomplete/extra output before it can be persisted as review_not_needed.
+  if (!scoring.error) validateChecklistCoverage(scoring.csChecklist, criteria?.map((c) => c.id) ?? []);
 
   let highRiskFlags: Evaluation["highRiskFlags"] = [];
   try {
-    highRiskFlags = matchMetricHighRiskFlags(await listHighRiskFlagRules(), scoring.metrics);
+    const rules = await listHighRiskFlagRules({ channel: opts.channel });
+    highRiskFlags = matchMetricHighRiskFlags(rules, scoring.metrics);
+    if (opts.threadCounts) {
+      highRiskFlags = [...highRiskFlags, ...matchFeedbackHighRiskFlags(rules, opts.threadCounts)];
+    }
   } catch (error) {
     console.warn("[textEvaluation] highRiskFlags:", error instanceof Error ? error.message : error);
   }

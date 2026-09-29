@@ -1,9 +1,11 @@
-import { feedbackBq } from "./bqRefs";
-import { getBQ } from "./bigquery";
-import { cached } from "./serverCache";
+import { FEEDBACK_SOURCE_SYSTEM } from "./bqRefs";
 import type { EvaluationTurn } from "./evaluationChannel";
+import { replyAdminDisplayName } from "./feedbackAdmins";
+import type { FeedbackCountTarget } from "./highRiskFlags";
 
-export const FEEDBACK_SOURCE_SYSTEM = `${feedbackBq.projectId}.${feedbackBq.sourceView}`;
+export { DAANGNE_ADMIN_ID, DAANGNE_ADMIN_NAME, replyAdminDisplayName, replyAdminNamesForDisplay } from "./feedbackAdmins";
+
+export { FEEDBACK_SOURCE_SYSTEM } from "./bqRefs";
 
 export interface FeedbackSample {
   channel: "feedback";
@@ -13,13 +15,18 @@ export interface FeedbackSample {
   adminId: string | null;
   adminName: string;
   participatingAdmins: { id: string; name: string }[];
+  /** 스레드에서 마지막으로 답변한 어드민. 당근이(10588)일 수 있다. */
+  lastReplyAdminId: string | null;
+  lastReplyAdminName: string | null;
   team: string;
   category: string;
   internalCategory: string | null;
   feedbackDate: string;
   firstFeedbackAt: string;
+  /** 스레드 마지막 이벤트(=해결 시각에 가장 가까운 값) */
   lastEventAt: string;
   firstReplyAt: string | null;
+  lastReplyAt: string | null;
   feedbackCount: number;
   replyCount: number;
   responseTimeSec: number | null;
@@ -53,7 +60,10 @@ function nullableString(v: unknown): string | null {
 }
 
 function nullableNumber(v: unknown): number | null {
-  const n = Number(valueOf(v));
+  const raw = valueOf(v);
+  // Number(null) === 0 이라, CSAT 미참여를 0점으로 오해하지 않게 먼저 걸러낸다.
+  if (raw === null || raw === undefined || raw === "") return null;
+  const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -80,6 +90,16 @@ function parseKstMillis(value: string): number | null {
     .replace(/\.(\d{3})\d+/, ".$1");
   const millis = Date.parse(/[zZ]|[+-]\d\d:\d\d$/.test(normalized) ? normalized : `${normalized}+09:00`);
   return Number.isFinite(millis) ? millis : null;
+}
+
+/**
+ * REPLY 헤더의 `reply_admin_id=10588(Jane)` 에서 답변 어드민을 뽑는다.
+ * 원천 뷰가 admin 이름 조회에 실패하면 괄호가 비어 있어(`10588()`) 이름은 null로 둔다.
+ */
+export function parseReplyAdmin(raw: string): { id: string | null; name: string | null } {
+  const match = raw.trim().match(/^([^()]*?)\s*(?:\(([^()]*)\))?$/);
+  if (!match) return { id: null, name: null };
+  return { id: match[1].trim() || null, name: (match[2] ?? "").trim() || null };
 }
 
 function parseHeader(line: string): {
@@ -129,7 +149,11 @@ export function stripFeedbackHtml(raw: string): string {
     .trim();
 }
 
-export function parseFeedbackContents(contents: string): EvaluationTurn[] {
+/**
+ * @param agentFallbackLabel REPLY 헤더에 사람 어드민 이름이 없을 때 쓸 라벨(스레드 담당 어드민).
+ *   당근이(10588)는 할당 어드민으로 대체하지 않는다. 이름도 없으면 "상담사"로 떨어진다.
+ */
+export function parseFeedbackContents(contents: string, agentFallbackLabel?: string | null): EvaluationTurn[] {
   const normalized = contents.replace(/\r\n/g, "\n").trim();
   if (!normalized) return [];
 
@@ -149,16 +173,21 @@ export function parseFeedbackContents(contents: string): EvaluationTurn[] {
     parsed.push({ ...header, text });
   }
 
+  const agentFallback = (agentFallbackLabel ?? "").trim() || "상담사";
   const firstMillis = parseKstMillis(parsed[0]?.occurredAt ?? "");
   return parsed.map((turn, index) => {
     const millis = parseKstMillis(turn.occurredAt);
+    const replyAdmin = parseReplyAdmin(turn.metadata.reply_admin_id ?? "");
     return {
       turnId:
         turn.metadata.feedback_id ??
         turn.metadata.reply_id ??
         `${turn.kind}-${index + 1}`,
       speaker: turn.kind === "feedback" ? "customer" : "agent",
-      speakerLabel: turn.kind === "feedback" ? "문의자" : "상담사",
+      speakerLabel:
+        turn.kind === "feedback"
+          ? "문의자"
+          : replyAdminDisplayName(replyAdmin.id, replyAdmin.name) ?? agentFallback,
       text: turn.text,
       occurredAt: turn.occurredAt,
       atSec:
@@ -170,10 +199,11 @@ export function parseFeedbackContents(contents: string): EvaluationTurn[] {
   });
 }
 
-function rowToFeedbackSample(row: FeedbackRow): FeedbackSample | null {
+export function rowToFeedbackSample(row: FeedbackRow): FeedbackSample | null {
   const sourceId = stringValue(row.feedback_thread_id);
   if (!sourceId) return null;
-  const turns = parseFeedbackContents(stringValue(row.contents_concat));
+  const adminName = stringValue(row.any_admin_name);
+  const turns = parseFeedbackContents(stringValue(row.contents_concat), adminName);
   const participatingAdmins = parseParticipatingAdmins(stringValue(row.admin_agg));
   const firstFeedbackAt = stringValue(row.first_feedback_at_kst);
   const lastEventAt = stringValue(row.thread_last_event_at_kst || row.last_feedback_at_kst);
@@ -188,17 +218,21 @@ function rowToFeedbackSample(row: FeedbackRow): FeedbackSample | null {
     sourceId,
     threadId: sourceId,
     adminId: nullableString(row.any_admin_id),
-    adminName: stringValue(row.any_admin_name),
+    adminName,
     participatingAdmins,
-    team: stringValue(row.work_group_team || row.work_group_name_ko || row.feedback_renewal_team),
+    lastReplyAdminId: nullableString(row.last_reply_admin_id),
+    lastReplyAdminName: nullableString(row.last_reply_admin_name),
+    // 콜 품질과 같은 「소속(renewal team)」 기준으로 맞춘다. 뷰의 work_group_* 는 문의가 배정된 조직이라 값이 다르다.
+    team: stringValue(row.feedback_renewal_team || row.work_group_team || row.work_group_name_ko),
     category: stringValue(row.display_full_category_name),
     internalCategory: nullableString(row.internal_feedback_category_path_name),
     feedbackDate: firstFeedbackAt.slice(0, 10),
     firstFeedbackAt,
     lastEventAt,
     firstReplyAt,
-    feedbackCount: Number(row.n_feedback_rows) || 0,
-    replyCount: Number(row.n_reply_rows) || 0,
+    lastReplyAt: nullableString(row.last_reply_at_kst),
+    feedbackCount: nullableNumber(row.n_feedback_rows) ?? 0,
+    replyCount: nullableNumber(row.n_reply_rows) ?? 0,
     responseTimeSec:
       firstMillis != null && firstReplyMillis != null
         ? Math.max(0, Math.round((firstReplyMillis - firstMillis) / 1000))
@@ -225,116 +259,60 @@ export interface FeedbackSampleFilters {
   teams?: string[];
   categories?: string[];
   adminNames?: string[];
+  adminIds?: string[];
+  csatRates?: number[];
+  /** CSAT 미참여(설문 없음) 스레드도 포함 */
+  csatIncludeNone?: boolean;
   feedbackCountMin?: number | null;
   feedbackCountMax?: number | null;
   replyCountMin?: number | null;
   replyCountMax?: number | null;
+  /** 사람 답변 어드민 수(뷰 human_cnt). 당근이만 답변한 스레드는 0. */
+  humanCountMin?: number | null;
+  humanCountMax?: number | null;
+  /**
+   * 고위험군 건수 규칙(OR). 목록 API가 평가 설계 규칙에서 채운다.
+   * 최근 N건을 가져온 뒤 메모리에서 걸르면 고위험 스레드가 창 밖에 있어 빈 목록이 된다.
+   */
+  highRiskCountAny?: { countTarget: FeedbackCountTarget; minCount: number }[];
 }
+
+/** SQL로 내려가지 않는 필터까지 포함한 목록 API 입력. */
+export type FeedbackListFilters = FeedbackSampleFilters & {
+  /** AI 평가 결과가 있는 스레드만 — 평가 결과 병합 후 걸러진다. */
+  analyzedOnly?: boolean;
+  /** 고위험군 플래그가 하나라도 붙은 스레드만 */
+  highRiskOnly?: boolean;
+  /** 특정 플래그 키만(선택한 것 중 하나라도 = OR). 비면 전체 고위험군. */
+  highRiskFlagKeys?: string[];
+};
 
 function cleanArray(values: string[] | undefined): string[] {
   return (values ?? []).map((value) => value.trim()).filter(Boolean);
 }
 
-/** 집계 뷰는 무거울 수 있으므로 짧은 TTL 캐시와 명시적 limit을 함께 적용한다. */
+/** 스레드 ID가 있으면 그 ID만 찾고 나머지 필터는 무시한다. */
+export function isFeedbackThreadLookup(filters: FeedbackSampleFilters): boolean {
+  return cleanArray(filters.sourceIds).length > 0;
+}
+
+export interface FeedbackFilterOptions {
+  /** 팀-어드민 쌍. 콜 품질 필터 옵션과 같은 모양이라 패널 코드를 공유한다. */
+  teamAgents: { team: string; name: string }[];
+  categories: string[];
+}
+
+/** 종결 스레드 목록. Postgres `feedback_serving` 을 본다. */
 export async function listFeedbackSamples(
   filters: FeedbackSampleFilters = {},
   limit = 100,
 ): Promise<FeedbackSample[]> {
-  const safeLimit = Math.min(Math.max(Math.floor(limit) || 100, 1), 500);
-  const key = `feedback-samples:${JSON.stringify({ filters, safeLimit })}`;
-  return cached(key, 10 * 60 * 1000, async () => {
-    const where = ["feedback_start_timestamp is not null"];
-    const params: Record<string, unknown> = { limit: safeLimit };
-    const types: Record<string, string> = {};
+  const { listServingFeedbackSamples } = await import("./feedbackServingStore");
+  return listServingFeedbackSamples(filters, limit);
+}
 
-    const addIn = (values: string[] | undefined, expression: string, name: string) => {
-      const cleaned = cleanArray(values);
-      if (!cleaned.length) return;
-      where.push(`${expression} in unnest(@${name})`);
-      params[name] = cleaned;
-    };
-
-    addIn(filters.sourceIds, "cast(feedback_thread_id as string)", "sourceIds");
-    addIn(filters.teams, "coalesce(work_group_team, work_group_name_ko, feedback_renewal_team)", "teams");
-    addIn(filters.categories, "display_full_category_name", "categories");
-    const adminNames = cleanArray(filters.adminNames);
-    if (adminNames.length) {
-      where.push(`
-        exists (
-          select 1
-          from unnest(split(ifnull(admin_agg, ''), ',')) as participant
-          where coalesce(regexp_extract(trim(participant), r'^(.*?)\\s*\\('), trim(participant))
-            in unnest(@adminNames)
-        )
-      `);
-      params.adminNames = adminNames;
-    }
-    if (filters.feedbackCountMin != null && Number.isFinite(filters.feedbackCountMin)) {
-      where.push("n_feedback_rows >= @feedbackCountMin");
-      params.feedbackCountMin = Math.max(0, Math.floor(filters.feedbackCountMin));
-      types.feedbackCountMin = "INT64";
-    }
-    if (filters.feedbackCountMax != null && Number.isFinite(filters.feedbackCountMax)) {
-      where.push("n_feedback_rows <= @feedbackCountMax");
-      params.feedbackCountMax = Math.max(0, Math.floor(filters.feedbackCountMax));
-      types.feedbackCountMax = "INT64";
-    }
-    if (filters.replyCountMin != null && Number.isFinite(filters.replyCountMin)) {
-      where.push("n_reply_rows >= @replyCountMin");
-      params.replyCountMin = Math.max(0, Math.floor(filters.replyCountMin));
-      types.replyCountMin = "INT64";
-    }
-    if (filters.replyCountMax != null && Number.isFinite(filters.replyCountMax)) {
-      where.push("n_reply_rows <= @replyCountMax");
-      params.replyCountMax = Math.max(0, Math.floor(filters.replyCountMax));
-      types.replyCountMax = "INT64";
-    }
-    if (filters.dateStart) {
-      where.push("date(feedback_start_timestamp, 'Asia/Seoul') >= @dateStart");
-      params.dateStart = filters.dateStart;
-    }
-    if (filters.dateEnd) {
-      where.push("date(feedback_start_timestamp, 'Asia/Seoul') <= @dateEnd");
-      params.dateEnd = filters.dateEnd;
-    }
-
-    const [rows] = await getBQ().query({
-      query: `
-        select
-          feedback_thread_id,
-          any_admin_id,
-          any_admin_name,
-          admin_agg,
-          contents_concat,
-          display_full_category_name,
-          feedback_category_path_id,
-          feedback_renewal_team,
-          feedback_start_timestamp,
-          first_feedback_at_kst,
-          first_reply_at_kst,
-          last_feedback_at_kst,
-          last_reply_at_kst,
-          thread_first_event_at_kst,
-          thread_last_event_at_kst,
-          n_feedback_rows,
-          n_reply_rows,
-          work_group_name,
-          work_group_name_ko,
-          work_group_team,
-          internal_feedback_category_path_name,
-          csat_id,
-          csat_rate,
-          csat_comment
-        from ${feedbackBq.sourceSql()}
-        where status = 20
-          and ${where.join("\n          and ")}
-        order by feedback_start_timestamp desc
-        limit @limit
-      `,
-      params,
-      ...(Object.keys(types).length ? { types } : {}),
-      location: feedbackBq.location,
-    });
-    return (rows as FeedbackRow[]).map(rowToFeedbackSample).filter((row): row is FeedbackSample => Boolean(row));
-  });
+/** 팀·어드민·카테고리 고유값. 최근 90일 서빙 행에서 뽑는다. */
+export async function listFeedbackFilterOptions(): Promise<FeedbackFilterOptions> {
+  const { listServingFeedbackFilterOptions } = await import("./feedbackServingStore");
+  return listServingFeedbackFilterOptions();
 }

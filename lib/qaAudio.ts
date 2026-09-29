@@ -50,6 +50,27 @@ export async function ensureLocalQaAudio(conversationId: string): Promise<{
   return { wavPath: dest, sourcePath: dest, reused: false, tempPaths };
 }
 
+/**
+ * 배치 업로드용 wav. 콜마다 새 임시 파일로 받고, 호출부가 tempPaths를 지운다.
+ * 공유 경로(`.data/qa-audio/{id}.wav`)는 쓰지도 읽지도 않는다 — 같은 콜을 여러 워커가 동시에
+ * 다루면 그 한 파일을 두고 EBUSY·0바이트 업로드·ENOENT가 났고, 평가가 남겨 둔 파일을 지우기도 했다.
+ */
+export async function prepareUploadAudio(conversationId: string): Promise<{
+  wavPath: string;
+  tempPaths: string[];
+}> {
+  const url = await getConversationAudioUrl(conversationId);
+  const { bytes } = await downloadAudio(url);
+  const srcPath = await saveTempFile(bytes, ".audio");
+  try {
+    const wavPath = await transcodeToWav(srcPath, 2);
+    return { wavPath, tempPaths: [srcPath, wavPath] };
+  } catch (e) {
+    await cleanupTempFile(srcPath);
+    throw e;
+  }
+}
+
 /** keep=false일 때 로컬 QA 오디오 삭제 */
 export async function removeLocalQaAudio(conversationId: string): Promise<void> {
   await cleanupTempFile(qaAudioPath(conversationId));

@@ -1,8 +1,8 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessQualityEval } from "@/lib/sessionAccessServer";
 import { listHighRiskFlagRules, upsertHighRiskFlagRules } from "@/lib/highRiskFlagStore";
-import type { HighRiskFlagKind } from "@/lib/highRiskFlags";
+import type { HighRiskFlagRule } from "@/lib/highRiskFlags";
 import { getOrRefreshLongCallThreshold } from "@/lib/longCallThresholdStore";
 import type { LongCallThresholdSnapshot } from "@/lib/longCallThreshold";
 
@@ -12,9 +12,10 @@ export const dynamic = "force-dynamic";
 export async function GET(): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return new Response("Unauthorized", { status: 401 });
-  if (!await ensureSessionCanAccessAnyCallQuality(session)) return new Response("Forbidden", { status: 403 });
+  if (!await ensureSessionCanAccessQualityEval(session)) return new Response("Forbidden", { status: 403 });
 
   try {
+    // 화면이 채널 탭으로 나눠 보여주므로 전 채널 규칙을 그대로 넘긴다.
     const rules = await listHighRiskFlagRules({ seedBy: session.user.email });
     const longRule = rules.find((r) => r.enabled && r.kind === "long_call_percentile");
     let longCallThreshold: LongCallThresholdSnapshot | null = null;
@@ -34,24 +35,15 @@ export async function GET(): Promise<Response> {
 export async function PUT(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return new Response("Unauthorized", { status: 401 });
-  if (!await ensureSessionCanAccessAnyCallQuality(session)) return new Response("Forbidden", { status: 403 });
+  if (!await ensureSessionCanAccessQualityEval(session)) return new Response("Forbidden", { status: 403 });
 
   try {
     const body = (await req.json().catch(() => ({}))) as {
-      rules?: Array<{
-        ruleId?: string;
-        key: string;
-        label: string;
-        enabled: boolean;
-        kind: HighRiskFlagKind;
-        params: {
-          percentile?: number | null;
-          minMinutes?: number | null;
-          minPercent?: number | null;
-          metricKey?: string | null;
-        };
-        sortOrder: number;
-      }>;
+      rules?: Array<
+        Pick<HighRiskFlagRule, "key" | "label" | "enabled" | "channel" | "kind" | "params" | "sortOrder"> & {
+          ruleId?: string;
+        }
+      >;
     };
     if (!Array.isArray(body.rules) || !body.rules.length) {
       return Response.json({ error: "rules가 필요합니다." }, { status: 400 });

@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { isAdmin } from "@/lib/adminEmails";
-import { getUsageStats } from "@/lib/bigquery";
+import { getUsageStats } from "@/lib/usageEvents";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";

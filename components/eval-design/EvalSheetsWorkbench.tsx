@@ -1,4 +1,5 @@
 "use client";
+import { readExposureChannels, validateChannelBindings } from '@/lib/criterionChannels';
 
 import { useCallback, useMemo, useState } from "react";
 import { ArrowLeft, ClipboardList, FilePlus, Loader2, Save, Star } from "lucide-react";
@@ -41,7 +42,7 @@ import {
   parseAudioPipelineConfig,
   type AudioPipelineStepId,
 } from "@/lib/audioPipeline";
-import { previewFinalPrompt } from "@/lib/promptRender";
+import { previewFinalPrompt, parseCriteriaJson } from "@/lib/promptRender";
 import type { CsCriterion } from "@/lib/csChecklist";
 import { buildCriterionVersionLabel } from "@/lib/criterionVersionLabel";
 import { cacheInvalidate } from "@/lib/clientCache";
@@ -57,6 +58,7 @@ type EvalPayload = {
 type CriteriaPayload = {
   source: SourceCriterion[];
   prompts: CriterionPrompt[];
+  fieldKeys?: import('@/lib/promptTypes').PromptFieldKey[];
 };
 
 type SheetRow = PromptVersion & { templateKey: PromptTemplateKey };
@@ -68,7 +70,6 @@ type ListPayload = {
 
 const SHEET_LABEL: Record<PromptTemplateKey, string> = {
   call_eval_growth: "그로스 CS 체크리스트",
-  call_eval_pay: "페이 콜 품질",
   feedback_eval: "인앱 문의 텍스트 평가",
   chatcs_eval: "채팅상담 텍스트 평가",
 };
@@ -83,12 +84,6 @@ const TEMPLATE_CARDS: {
     key: "call_eval_growth",
     name: "그로스 CS 체크리스트",
     desc: "Hot/Cold 판정 + CS 감점 체크리스트가 포함된 기본 평가표",
-    meta: "다회 사용 템플릿",
-  },
-  {
-    key: "call_eval_pay",
-    name: "페이 콜 품질",
-    desc: "페이 조직용 점수 중심 평가표 (체크리스트 선택)",
     meta: "다회 사용 템플릿",
   },
   {
@@ -282,6 +277,7 @@ export default function EvalSheetsWorkbench() {
   const [checklistTemplate, setChecklistTemplate] = useState("");
   const [useChecklist, setUseChecklist] = useState(true);
   const [bindings, setBindings] = useState<EvalCriterionBinding[]>([]);
+  const [legacySnapshot, setLegacySnapshot] = useState<string | undefined>();
   const [outputCfg, setOutputCfg] = useState<OutputSchemaConfig>(DEFAULT_OUTPUT_SCHEMA_CONFIG);
   const [resultParseCfg, setResultParseCfg] = useState<ResultParseConfig>(DEFAULT_RESULT_PARSE_CONFIG);
   const [audioCfg, setAudioCfg] = useState<AudioPipelineConfig>(DEFAULT_AUDIO_PIPELINE_CONFIG);
@@ -342,7 +338,7 @@ export default function EvalSheetsWorkbench() {
       const r = await fetch("/api/prompts/criteria");
       const data = await r.json();
       if (!r.ok) throw new Error(data.error ?? "항목 로드 실패");
-      return { source: data.source ?? [], prompts: data.prompts ?? [] };
+      return { source: data.source ?? [], prompts: data.prompts ?? [], fieldKeys: data.fieldKeys };
     },
   });
 
@@ -352,6 +348,7 @@ export default function EvalSheetsWorkbench() {
     setChannelTab(channel);
     setTemplateKey(key);
     setSelectedVersionId(v.versionId);
+    setLegacySnapshot(v.legacyChannelSnapshotJson);
     setVersionLabel(v.versionLabel);
     setVersionNote("");
     setBasePrompt(v.basePrompt);
@@ -383,6 +380,7 @@ export default function EvalSheetsWorkbench() {
   }, []);
 
   const applyTemplateSeed = useCallback((key: PromptTemplateKey | "blank") => {
+    setLegacySnapshot(undefined);
     if (key === "blank") {
       const blankTemplateKey = PROMPT_CHANNEL_CONFIG[channelTab].defaultTemplateKey;
       setTemplateKey(blankTemplateKey);
@@ -462,13 +460,14 @@ export default function EvalSheetsWorkbench() {
   const promptsByCrit = useMemo(() => {
     const m = new Map<number, CriterionPrompt[]>();
     for (const p of prompts) {
+      if (!readExposureChannels(p.exposureChannels).includes(promptChannelForTemplateKey(templateKey))) continue;
       const list = m.get(p.criterionId) ?? [];
       list.push(p);
       m.set(p.criterionId, list);
     }
     for (const [, list] of m) list.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
     return m;
-  }, [prompts]);
+  }, [prompts, templateKey]);
 
   const itemCategories = useMemo(() => {
     const counts = new Map<string, number>();
@@ -487,13 +486,16 @@ export default function EvalSheetsWorkbench() {
   }, [source, itemCategory]);
 
   const previewCriteria: CsCriterion[] = useMemo(() => {
+    if (legacySnapshot) {
+      const frozen = JSON.parse(legacySnapshot);
+      if (JSON.stringify(frozen.bindings) === JSON.stringify(bindings)) return parseCriteriaJson(JSON.stringify(frozen.criteria));
+    }
     return bindings
       .filter((b) => b.enabled)
       .map((b) => {
         const src = source.find((s) => s.id === b.criterionId);
         const p =
-          (b.promptId && prompts.find((x) => x.promptId === b.promptId)) ||
-          promptsByCrit.get(b.criterionId)?.[0];
+          promptsByCrit.get(b.criterionId)?.find((x) => x.promptId === b.promptId);
         return {
           id: b.criterionId,
           category: src?.parentName ?? p?.category ?? "",
@@ -502,7 +504,7 @@ export default function EvalSheetsWorkbench() {
           fields: p?.fields ?? {},
         };
       });
-  }, [bindings, source, prompts, promptsByCrit]);
+  }, [bindings, source, prompts, promptsByCrit, legacySnapshot]);
 
   const previewText = useMemo(
     () =>
@@ -512,8 +514,9 @@ export default function EvalSheetsWorkbench() {
         criteria: previewCriteria,
         useChecklist,
         outputSchemaConfig: outputCfg,
+        fieldKeys: legacySnapshot ? undefined : criteriaData?.fieldKeys,
       }),
-    [basePrompt, checklistTemplate, previewCriteria, useChecklist, outputCfg],
+    [basePrompt, checklistTemplate, previewCriteria, useChecklist, outputCfg, criteriaData?.fieldKeys, legacySnapshot],
   );
 
   const existingVersionLabels = useMemo(
@@ -565,6 +568,8 @@ export default function EvalSheetsWorkbench() {
   };
 
   const saveEval = async (promote: boolean) => {
+    try { validateChannelBindings(bindings, prompts, promptChannelForTemplateKey(templateKey)); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); return; }
     setBusy(true);
     setError(null);
     setOk(null);
@@ -1007,7 +1012,7 @@ export default function EvalSheetsWorkbench() {
                                 ...others,
                                 {
                                   criterionId: s.id,
-                                  promptId: b?.promptId || vers[0]?.promptId || "",
+                                  promptId: b?.promptId || "",
                                   enabled: true,
                                 },
                               ];
@@ -1029,13 +1034,15 @@ export default function EvalSheetsWorkbench() {
                             });
                           }}
                         >
-                          <option value="">(최신/힌트)</option>
+                          <option value="">버전을 직접 선택하세요</option>
+                          {b?.promptId && !vers.some((p) => p.promptId === b.promptId) ? <option disabled value={b.promptId}>기존 바인딩 · 새 저장 시 재선택 필요</option> : null}
                           {vers.map((p) => (
                             <option key={p.promptId} value={p.promptId}>
-                              {p.versionLabel}
+                              {p.versionLabel} · {p.promptId.slice(0, 8)} · {p.fields.definition?.slice(0, 80)}
                             </option>
                           ))}
                         </select>
+                        {b?.promptId ? <details className="col-span-3 text-xs"><summary>선택 상세 내용</summary><pre className="whitespace-pre-wrap">{Object.entries(vers.find((p) => p.promptId === b.promptId)?.fields ?? {}).map(([k, v]) => `${k}: ${v}`).join('\n\n')}</pre></details> : null}
                       </div>
                     );
                   })

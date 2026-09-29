@@ -1,5 +1,5 @@
-import { getBQ } from "./bigquery";
 import { growthBq } from "./bqRefs";
+import { servingQuery } from "./servingDb";
 import {
   ensureEvalResultsTable,
   getLatestEvalResult,
@@ -17,7 +17,6 @@ import type { ResultParseConfig } from "./promptTypes";
 import type { EvaluationResult } from "./types";
 import { CS_CHECKLIST } from "./csChecklist";
 
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
 
 export interface QaReferenceSample {
   conversationId: string;
@@ -173,21 +172,20 @@ function extractYearMonth(row: Record<string, unknown>): string | null {
 
 /** 수기 레퍼런스 뷰 목록 (year_month >= QA_REFERENCES_MIN_YEAR_MONTH) */
 export async function listQaReferenceSamples(limit = 500): Promise<QaReferenceSample[]> {
-  const viewSql = growthBq.qaReferencesSql();
-  if (!viewSql) throw new Error("QA_REFERENCES_VIEW 미설정");
+  if (!growthBq.qaReferencesSql()) throw new Error("QA_REFERENCES_VIEW 미설정");
 
-  const minYm = growthBq.qaReferencesMinYearMonth;
-  const [rows] = await getBQ().query({
-    query: `
-      select *
-      from ${viewSql}
-      where year_month >= date(@min_year_month)
+  // 서빙 사본(qms_qa_references, 야간 pull). 뷰 행을 JSON 그대로 둔다.
+  const rows = (
+    await servingQuery<{ row_json: Record<string, unknown> }>(
+      `
+      select row_json from qms_qa_references
+      where year_month >= $1::date
       order by year_month desc, case_id desc
-      limit @limit
-    `,
-    params: { min_year_month: minYm, limit },
-    ...loc(),
-  });
+      limit $2
+      `,
+      [growthBq.qaReferencesMinYearMonth, limit],
+    )
+  ).map((r) => r.row_json);
 
   const list = (rows as Record<string, unknown>[]).map((r) => {
     const scoreDetailRaw = pickString(r, ["score_detail"]) ?? "";

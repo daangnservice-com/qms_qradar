@@ -16,12 +16,16 @@
 
 | 객체 | 용도 |
 |---|---|
-| `ds_growth_culture.qradar_evaluation_cases` | **평가 진행(Test/ops)** 샘플 풀 |
+| `ds_qradar_{dev|prod}.qradar_evaluation_cases_flat` | **평가 진행(Test/ops)** 샘플 풀 (컬럼 적재, `BQ_TARGET`) |
 | `ds_growth_culture.vw_evaluation_criterions` | 평가 항목 마스터 |
 
 ## 통합 AI 결과 테이블 (앱 적재 · `ds_qradar_{prod|dev}`)
 
 실행 메타데이터의 기준 테이블은 `qradar_evaluation_results`다.  
+2026-09-21 dev 컷오버 이후 키는 `channel + source_system + source_id` 다.  
+전화는 `phone`/`genesys`/`conversation_id`. 인앱은 기존 item_results 행을 이 테이블로 합친다.  
+수기 완료는 `qradar_eval_review_completions`, 주석은 `qradar_eval_human_reviews`.  
+런북: [ops-migration/eval-item-key-unification.md](../ops-migration/eval-item-key-unification.md).  
 (`purpose` = `call_eval` | `qa_eval`, `org` = growth/pay). 기준 정의와
 기준별 판정은 정규화 테이블로 분리한다. 통합 전 `qradar_qa_eval_results`는
 `scripts/migrate-qa-eval-results.ts`로 물리 복사한다 (앱 런타임 읽기 fallback 없음).

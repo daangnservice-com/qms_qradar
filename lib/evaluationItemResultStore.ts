@@ -1,13 +1,12 @@
-import { randomUUID } from "node:crypto";
-import { getBQ } from "./bigquery";
-import { growthBq, qradarTable } from "./bqRefs";
+// 채널 공통 평가 결과(인앱 문의 등). 저장·조회는 서빙 Postgres(serving_eval_results)만 친다.
+// BQ 결과 테이블로는 야간 덤프가 내보낸다.
 import type { EvaluationChannel, EvaluationItemRef } from "./evaluationChannel";
 import type { EvaluationResult } from "./types";
 import { checklistFromEvalPayload } from "./humanResultDerive";
-import { deriveEvalLabel } from "./resultParse";
-import { DEFAULT_RESULT_PARSE_CONFIG, type ResultParseConfig } from "./promptTypes";
-import { isEvalItemKeyV2, mapStoredPurpose } from "./evalItemKey";
+import type { ResultParseConfig } from "./promptTypes";
+import { mapStoredPurpose } from "./evalItemKey";
 import { saveEvalRun } from "./evalResultStore";
+import { listServingLatestByItems } from "./servingEvalStore";
 
 /** 전화 레거시 결과 테이블과 분리된 채널 공통 결과 행. */
 export type EvaluationItemResultRow = {
@@ -31,59 +30,6 @@ export type EvaluationItemResultRow = {
   llmCallId: string | null;
   error: string | null;
 };
-
-const TABLE = qradarTable("evaluation_item_results");
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
-const tableRef = () =>
-  getBQ().dataset(growthBq.dataset, { projectId: growthBq.projectId }).table(TABLE);
-const sql = () => growthBq.resultsSql(TABLE);
-
-const SCHEMA = [
-  { name: "analysis_id", type: "STRING", mode: "REQUIRED" },
-  { name: "analyzed_at", type: "TIMESTAMP", mode: "REQUIRED" },
-  { name: "channel", type: "STRING", mode: "REQUIRED" },
-  { name: "source_system", type: "STRING", mode: "REQUIRED" },
-  { name: "source_id", type: "STRING", mode: "REQUIRED" },
-  { name: "org", type: "STRING", mode: "NULLABLE" },
-  { name: "purpose", type: "STRING", mode: "REQUIRED" },
-  { name: "analyzed_by", type: "STRING", mode: "NULLABLE" },
-  { name: "model", type: "STRING", mode: "NULLABLE" },
-  { name: "prompt_version_id", type: "STRING", mode: "NULLABLE" },
-  { name: "prompt_version", type: "STRING", mode: "NULLABLE" },
-  { name: "ai_label", type: "STRING", mode: "NULLABLE" },
-  { name: "checklist_json", type: "STRING", mode: "NULLABLE" },
-  { name: "result_json", type: "STRING", mode: "REQUIRED" },
-  { name: "transcript_json", type: "STRING", mode: "NULLABLE" },
-  { name: "conversation_json", type: "STRING", mode: "NULLABLE" },
-  { name: "input_snapshot_json", type: "STRING", mode: "NULLABLE" },
-  { name: "llm_call_id", type: "STRING", mode: "NULLABLE" },
-  { name: "error", type: "STRING", mode: "NULLABLE" },
-] as const;
-
-const isAlreadyExists = (e: unknown) =>
-  (e as { code?: number })?.code === 409 || /already exists/i.test(e instanceof Error ? e.message : String(e));
-
-let ensured: Promise<void> | null = null;
-
-export function ensureEvaluationItemResultsTable(): Promise<void> {
-  if (!ensured) {
-    ensured = (async () => {
-      const table = tableRef();
-      const [exists] = await table.exists();
-      if (!exists) {
-        await table.create({
-          schema: SCHEMA as unknown as { name: string; type: string; mode: string }[],
-        }).catch((e) => {
-          if (!isAlreadyExists(e)) throw e;
-        });
-      }
-    })().catch((e) => {
-      ensured = null;
-      throw e;
-    });
-  }
-  return ensured;
-}
 
 function tsValue(value: unknown): string {
   if (value && typeof value === "object" && "value" in value) {
@@ -141,178 +87,49 @@ export interface SaveEvaluationItemResultInput extends EvaluationItemRef {
 export async function saveEvaluationItemResult(
   input: SaveEvaluationItemResultInput,
 ): Promise<EvaluationItemResultRow> {
-  if (await isEvalItemKeyV2()) {
-    const conversation = input.result.evaluation.conversation ?? [];
-    const saved = await saveEvalRun({
-      purpose: mapStoredPurpose(input.purpose),
-      org: input.org,
-      ref: { channel: input.channel, sourceSystem: input.sourceSystem, sourceId: input.sourceId },
-      analyzedBy: input.analyzedBy,
-      result: input.result,
-      promptVersionId: input.promptVersionId,
-      promptVersion: input.promptVersion,
-      model: input.model,
-      llmCallId: input.llmCallId,
-      parseConfig: input.parseConfig,
-      turnsJson: JSON.stringify(conversation.length ? conversation : (input.result.evaluation.transcript ?? [])),
-      inputSnapshot: input.inputSnapshot ?? { turns: conversation },
-    });
-    return {
-      analysisId: saved.analysisId,
-      analyzedAt: saved.analyzedAt,
-      channel: input.channel,
-      sourceSystem: input.sourceSystem,
-      sourceId: input.sourceId,
-      org: saved.org,
-      purpose: saved.purpose ?? mapStoredPurpose(input.purpose),
-      analyzedBy: saved.analyzedBy,
-      model: saved.model,
-      promptVersionId: saved.promptVersionId,
-      promptVersion: saved.promptVersion,
-      aiLabel: saved.aiLabel,
-      checklistJson: saved.checklistJson,
-      resultJson: saved.resultJson,
-      transcriptJson: saved.transcriptJson,
-      conversationJson: saved.transcriptJson,
-      inputSnapshotJson: JSON.stringify(input.inputSnapshot ?? { turns: conversation }),
-      llmCallId: saved.llmCallId,
-      error: saved.error,
-    };
-  }
-  await ensureEvaluationItemResultsTable();
-  const analysisId = randomUUID();
-  const analyzedAt = new Date().toISOString();
-  const result = {
-    ...input.result,
-    channel: input.channel,
-    sourceSystem: input.sourceSystem,
-    sourceId: input.sourceId,
-  };
-  const checklist = checklistFromEvalPayload({ resultJson: JSON.stringify(result), checklistJson: "[]" });
-  const aiLabel = result.evaluation.error ? "" : deriveEvalLabel(
-    { csChecklist: checklist },
-    input.parseConfig ?? DEFAULT_RESULT_PARSE_CONFIG,
-  );
-  const conversation = result.evaluation.conversation ?? [];
-  const row: EvaluationItemResultRow = {
-    analysisId,
-    analyzedAt,
-    channel: input.channel,
-    sourceSystem: input.sourceSystem,
-    sourceId: input.sourceId,
-    org: input.org?.trim() || null,
-    purpose: input.purpose,
-    analyzedBy: input.analyzedBy?.trim() || null,
-    model: input.model?.trim() || process.env.GEMINI_MODEL || "gemini-2.5-flash",
-    promptVersionId: input.promptVersionId?.trim() || null,
-    promptVersion: input.promptVersion?.trim() || null,
-    aiLabel,
-    checklistJson: JSON.stringify(checklist),
-    resultJson: JSON.stringify(result),
-    transcriptJson: JSON.stringify(result.evaluation.transcript ?? []),
-    conversationJson: JSON.stringify(conversation),
-    inputSnapshotJson: JSON.stringify(input.inputSnapshot ?? { turns: conversation }),
-    llmCallId: input.llmCallId?.trim() || null,
-    error: result.evaluation.error ?? null,
-  };
-
-  await getBQ().query({
-    query: `
-      insert into ${sql()} (
-        analysis_id, analyzed_at, channel, source_system, source_id, org, purpose,
-        analyzed_by, model, prompt_version_id, prompt_version, ai_label, checklist_json,
-        result_json, transcript_json, conversation_json, input_snapshot_json, llm_call_id, error
-      ) values (
-        @analysis_id, timestamp(@analyzed_at), @channel, @source_system, @source_id, @org, @purpose,
-        @analyzed_by, @model, @prompt_version_id, @prompt_version, @ai_label, @checklist_json,
-        @result_json, @transcript_json, @conversation_json, @input_snapshot_json, @llm_call_id, @error
-      )
-    `,
-    params: {
-      analysis_id: row.analysisId,
-      analyzed_at: row.analyzedAt,
-      channel: row.channel,
-      source_system: row.sourceSystem,
-      source_id: row.sourceId,
-      org: row.org,
-      purpose: row.purpose,
-      analyzed_by: row.analyzedBy,
-      model: row.model,
-      prompt_version_id: row.promptVersionId,
-      prompt_version: row.promptVersion,
-      ai_label: row.aiLabel,
-      checklist_json: row.checklistJson,
-      result_json: row.resultJson,
-      transcript_json: row.transcriptJson,
-      conversation_json: row.conversationJson,
-      input_snapshot_json: row.inputSnapshotJson,
-      llm_call_id: row.llmCallId,
-      error: row.error,
-    },
-    types: {
-      analysis_id: "STRING",
-      analyzed_at: "STRING",
-      channel: "STRING",
-      source_system: "STRING",
-      source_id: "STRING",
-      org: "STRING",
-      purpose: "STRING",
-      analyzed_by: "STRING",
-      model: "STRING",
-      prompt_version_id: "STRING",
-      prompt_version: "STRING",
-      ai_label: "STRING",
-      checklist_json: "STRING",
-      result_json: "STRING",
-      transcript_json: "STRING",
-      conversation_json: "STRING",
-      input_snapshot_json: "STRING",
-      llm_call_id: "STRING",
-      error: "STRING",
-    },
-    ...loc(),
+  const conversation = input.result.evaluation.conversation ?? [];
+  const saved = await saveEvalRun({
+    purpose: mapStoredPurpose(input.purpose),
+    org: input.org,
+    ref: { channel: input.channel, sourceSystem: input.sourceSystem, sourceId: input.sourceId },
+    analyzedBy: input.analyzedBy,
+    result: input.result,
+    promptVersionId: input.promptVersionId,
+    promptVersion: input.promptVersion,
+    model: input.model,
+    llmCallId: input.llmCallId,
+    parseConfig: input.parseConfig,
+    turnsJson: JSON.stringify(conversation.length ? conversation : (input.result.evaluation.transcript ?? [])),
+    inputSnapshot: input.inputSnapshot ?? { turns: conversation },
   });
-  return row;
+  return {
+    analysisId: saved.analysisId,
+    analyzedAt: saved.analyzedAt,
+    channel: input.channel,
+    sourceSystem: input.sourceSystem,
+    sourceId: input.sourceId,
+    org: saved.org,
+    purpose: saved.purpose ?? mapStoredPurpose(input.purpose),
+    analyzedBy: saved.analyzedBy,
+    model: saved.model,
+    promptVersionId: saved.promptVersionId,
+    promptVersion: saved.promptVersion,
+    aiLabel: saved.aiLabel,
+    checklistJson: saved.checklistJson,
+    resultJson: saved.resultJson,
+    transcriptJson: saved.transcriptJson,
+    conversationJson: saved.transcriptJson,
+    inputSnapshotJson: JSON.stringify(input.inputSnapshot ?? { turns: conversation }),
+    llmCallId: saved.llmCallId,
+    error: saved.error,
+  };
 }
 
 export async function getLatestEvaluationItemResult(
   ref: EvaluationItemRef,
 ): Promise<EvaluationItemResultRow | null> {
-  if (await isEvalItemKeyV2()) {
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${growthBq.resultsSql(growthBq.resultsTable)}
-        where channel = @channel and source_system = @source_system and source_id = @source_id
-        order by analyzed_at desc
-        limit 1
-      `,
-      params: {
-        channel: ref.channel,
-        source_system: ref.sourceSystem,
-        source_id: ref.sourceId,
-      },
-      ...loc(),
-    });
-    return rowToEvaluationItemResult((rows as Record<string, unknown>[])[0] ?? {});
-  }
-  await ensureEvaluationItemResultsTable();
-  const [rows] = await getBQ().query({
-    query: `
-      select *
-      from ${sql()}
-      where channel = @channel and source_system = @source_system and source_id = @source_id
-      order by analyzed_at desc
-      limit 1
-    `,
-    params: {
-      channel: ref.channel,
-      source_system: ref.sourceSystem,
-      source_id: ref.sourceId,
-    },
-    ...loc(),
-  });
-  return rowToEvaluationItemResult((rows as Record<string, unknown>[])[0] ?? {});
+  const [raw] = await listServingLatestByItems([ref]);
+  return raw ? rowToEvaluationItemResult(raw) : null;
 }
 
 export async function listLatestEvaluationItemResults(
@@ -321,41 +138,7 @@ export async function listLatestEvaluationItemResults(
   const unique = [...new Map(refs.map((ref) => [`${ref.channel}:${ref.sourceSystem}:${ref.sourceId}`, ref])).values()];
   const out = new Map<string, EvaluationItemResultRow>();
   if (!unique.length) return out;
-  if (await isEvalItemKeyV2()) {
-    const keys = unique.map((ref) => `${ref.channel}:${ref.sourceSystem}:${ref.sourceId}`);
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${growthBq.resultsSql(growthBq.resultsTable)}
-        where concat(channel, ':', source_system, ':', source_id) in unnest(@keys)
-        qualify row_number() over (
-          partition by channel, source_system, source_id order by analyzed_at desc
-        ) = 1
-      `,
-      params: { keys },
-      ...loc(),
-    });
-    for (const raw of rows as Record<string, unknown>[]) {
-      const row = rowToEvaluationItemResult(raw);
-      if (row) out.set(`${row.channel}:${row.sourceSystem}:${row.sourceId}`, row);
-    }
-    return out;
-  }
-  await ensureEvaluationItemResultsTable();
-  const keys = unique.map((ref) => `${ref.channel}:${ref.sourceSystem}:${ref.sourceId}`);
-  const [rows] = await getBQ().query({
-    query: `
-      select *
-      from ${sql()}
-      where concat(channel, ':', source_system, ':', source_id) in unnest(@keys)
-      qualify row_number() over (
-        partition by channel, source_system, source_id order by analyzed_at desc
-      ) = 1
-    `,
-    params: { keys },
-    ...loc(),
-  });
-  for (const raw of rows as Record<string, unknown>[]) {
+  for (const raw of await listServingLatestByItems(unique)) {
     const row = rowToEvaluationItemResult(raw);
     if (row) out.set(`${row.channel}:${row.sourceSystem}:${row.sourceId}`, row);
   }

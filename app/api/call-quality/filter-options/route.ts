@@ -1,6 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessAnyCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessEvalProgress } from "@/lib/sessionAccessServer";
 import { listFilterOptions } from "@/lib/evaluationSamples";
 
 export const runtime = "nodejs";
@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
 export async function GET(): Promise<Response> {
   const session = await getServerSession(authOptions);
   if (!session?.user?.email) return new Response("Unauthorized", { status: 401 });
-  if (!await ensureSessionCanAccessAnyCallQuality(session)) return new Response("Forbidden", { status: 403 });
+  if (!await ensureSessionCanAccessEvalProgress(session)) return new Response("Forbidden", { status: 403 });
 
   try {
     return Response.json(await listFilterOptions());

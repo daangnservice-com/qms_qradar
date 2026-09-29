@@ -1,10 +1,10 @@
-# QMS 개요 (helpdesk-x)
+# QMS 개요 (QRadar)
 
-당근 콘택센터 QA 평가 시스템의 IA·판정 모델을 helpdesk-x에 단계적으로 이식한다.
+당근 콘택센터 QA 평가 시스템의 IA·판정 모델이다. 이 리포는 `qms_qradar`이고, 프로덕션은 로컬 Next다. helpdesk-x는 포크 이전 이름이다. 요청 경로의 저장은 [서빙 DB](system/serving-db.md).
 
 ## 좌측 IA (레퍼런스)
 
-| 그룹 | 화면 | helpdesk-x 이번 범위 |
+| 그룹 | 화면 | 이번 범위 |
 |---|---|---|
 | 홈 | 대시보드 | 비범위 (`/`는 권한별 리다이렉트) |
 | **평가 진행** | 전체 평가 · 고위험군 평가 | `/call-quality` · `/call-quality/high-risk` |
@@ -14,7 +14,7 @@
 | 시스템 | 사용자, 권한 | **이메일 기반**. 사용량·AI 평가 job(관리자) |
 | (제품) | 이용 설명서 | `/guide` |
 
-## helpdesk-x 라우트 매핑
+## 라우트 매핑
 
 | 레퍼런스 | 라우트 | 백엔드 |
 |---|---|---|
@@ -26,7 +26,7 @@
 | AI 비교·개선 | `/eval-design/compare` | `qaStore` compare + evaluate |
 | 프롬프트 개선 | `/eval-design/prompt-improve` | Train/Test 불일치 + LLM 초안 |
 | AI 호출 사용량 | `/eval-design/llm-usage` | `llm_call_logs` |
-| 전체 평가 | `/call-quality` | Genesys→STT→Gemini · `evalResultStore` |
+| 전체 평가 | `/call-quality` | Genesys→STT→Gemini · Postgres `call_serving` / `serving_eval_results` |
 | 고위험군 평가 | `/call-quality/high-risk` | 동일 + `highRiskOnly` |
 | 평가 배분 | `/eval-ops/assign` | `evalOpsStore` + BQ `qradar_eval_targets` / `qradar_dist_*` |
 | 확정 배분 | `/eval-ops/assign?tab=assign&confirmed=1` | 마지막 확정 셋 + 배분 탭 |
@@ -45,7 +45,7 @@ Train 레퍼런스 뷰 → 통합 `qradar_evaluation_results` 리니지: [eval-d
 ## 역할 (레퍼런스)
 
 시스템관리자 · QA 매니저 · QA 평가자 · 상담사/구성원.  
-현재 helpdesk-x는 **이메일**로 사용자를 식별하고, 콜품질 권한(`canAccessAnyCallQuality`, `lib/adminEmails.ts`)으로 평가 설계를 게이트한다. 상세는 [시스템](system/README.md).
+사용자는 **이메일**로 식별하고, 콜품질 권한(`canAccessAnyCallQuality`, `lib/adminEmails.ts`)으로 평가 설계를 게이트한다. 상세는 [시스템](system/README.md).
 
 ## 상세 문서
 
@@ -56,4 +56,5 @@ Train 레퍼런스 뷰 → 통합 `qradar_evaluation_results` 리니지: [eval-d
 - [평가 설계](eval-design/)
 - [평가 운영 · 검수 현황](eval-ops/)
 - [GAS → QRadar 운영/결과 마이그레이션](ops-migration/README.md)
+- [서빙 DB](system/serving-db.md) — Postgres와 BigQuery 역할
 - [서비스 전체 구조](../helpdesk-x_서비스구조.md)

@@ -1,4 +1,12 @@
 import { readFile } from "node:fs/promises";
+import {
+  LOCAL_STT_HALLUCINATION_SILENCE_SEC,
+  LOCAL_STT_HOTWORDS,
+  prepareLocalSegments,
+  type LocalSttSegmentDetail,
+  type TimedSttSegment,
+  type TimedWord,
+} from "./localSttQuality";
 import type { SttSegment } from "./stt";
 import type { TranscriptSegment } from "./types";
 
@@ -258,36 +266,85 @@ function enqueueCallbackUrl(): string | null {
   return u.toString();
 }
 
+/** POST /v1/jobs 폼 필드. 계약: integrations/INTEGRATION.md */
+export function localSttJobFormFields(input: {
+  conversationId: string;
+  priority?: number;
+  /** true면 같은 client_ref가 있어도 새 잡. 재처리. 밤 배치는 보내지 않는다. */
+  force?: boolean;
+}): Record<string, string> {
+  const fields: Record<string, string> = {
+    client_ref: input.conversationId.trim(),
+    priority: String(input.priority ?? 0),
+  };
+  if (input.force) fields.force = "true";
+  return fields;
+}
+
+/**
+ * POST /v1/jobs `options` JSON.
+ * 문장형 initial_prompt는 넣지 않는다. faster-whisper가 무음·통화 앞부분에서
+ * 프롬프트 문장을 실제 발화처럼 출력하고, 그 구간의 진짜 인사를 덮어쓴다.
+ */
+export function localSttJobOptions(): Record<string, unknown> {
+  return {
+    language: localSttLanguage(),
+    channel_names: ["customer", "agent"],
+    word_timestamps: true,
+    hotwords: LOCAL_STT_HOTWORDS,
+    hallucination_silence_threshold: LOCAL_STT_HALLUCINATION_SILENCE_SEC,
+  };
+}
+
+/** 아직 재시작 전인 서버는 hotwords를 422로 거절한다. 단어 시각은 그 서버도 받는다. */
+export function localSttLegacyJobOptions(
+  full: Record<string, unknown> = localSttJobOptions(),
+): Record<string, unknown> {
+  return {
+    language: full.language,
+    channel_names: full.channel_names,
+    word_timestamps: true,
+  };
+}
+
 export async function enqueueLocalSttJob(input: {
   conversationId: string;
   audioPath: string;
   priority?: number;
+  /** 같은 client_ref의 대기·처리·완료 잡이 있어도 새 잡을 만든다. 재처리. */
+  force?: boolean;
 }): Promise<LocalSttEnqueueResult> {
   const base = localSttBaseUrl();
   if (!base) throw new Error("LOCAL_STT_BASE_URL 미설정");
 
   const bytes = await readFile(input.audioPath);
-  const options: Record<string, unknown> = {
-    language: localSttLanguage(),
-    channel_names: ["customer", "agent"],
-    initial_prompt: "당근서비스 고객센터. 상담원과 고객의 통화 녹취입니다.",
+  const fileName = `${input.conversationId}.wav`;
+  const fields = localSttJobFormFields({
+    conversationId: input.conversationId,
+    priority: input.priority,
+    force: input.force,
+  });
+  const callback = enqueueCallbackUrl();
+
+  const post = (options: Record<string, unknown>) => {
+    const form = new FormData();
+    form.append("file", new File([new Uint8Array(bytes)], fileName, { type: "audio/wav" }));
+    form.append("options", JSON.stringify(options));
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
+    if (callback) form.append("callback_url", callback);
+    return fetch(joinUrl(base, jobsPath()), {
+      method: "POST",
+      headers: { ...authHeaders() },
+      body: form,
+      signal: AbortSignal.timeout(10 * 60_000),
+    });
   };
 
-  const form = new FormData();
-  const file = new File([new Uint8Array(bytes)], `${input.conversationId}.wav`, { type: "audio/wav" });
-  form.append("file", file);
-  form.append("options", JSON.stringify(options));
-  form.append("client_ref", input.conversationId);
-  form.append("priority", String(input.priority ?? 0));
-  const callback = enqueueCallbackUrl();
-  if (callback) form.append("callback_url", callback);
-
-  const resp = await fetch(joinUrl(base, jobsPath()), {
-    method: "POST",
-    headers: { ...authHeaders() },
-    body: form,
-    signal: AbortSignal.timeout(10 * 60_000),
-  });
+  let resp = await post(localSttJobOptions());
+  if (resp.status === 422) {
+    console.warn("[local-stt] options rejected; retrying without hotwords");
+    resp = await post(localSttLegacyJobOptions());
+  }
   const body = await readJson(resp);
   if (!resp.ok) {
     const msg = str(body?.error ?? body?.detail ?? body?.message) ?? `HTTP ${resp.status}`;
@@ -438,11 +495,14 @@ export async function getLocalSttJob(remoteJobId: string): Promise<LocalSttJobVi
   return parseLocalSttJobView(body);
 }
 
+export type { LocalSttSegmentDetail } from "./localSttQuality";
+
 export type LocalSttResult = {
   segments: SttSegment[];
   transcript: TranscriptSegment[];
   durationSec: number;
   language: string | null;
+  details: LocalSttSegmentDetail[];
 };
 
 /** agent=상담원(tag 1), customer=고객(tag 2). 이름 없으면 enqueue channel_names 순서(ch0=customer, ch1=agent). */
@@ -458,12 +518,26 @@ export function speakerToLabel(speaker: string, channel: number): string {
   return tag === 1 ? "상담원" : tag === 2 ? "고객" : `화자 ${tag}`;
 }
 
+function parseWords(raw: unknown): TimedWord[] {
+  if (!Array.isArray(raw)) return [];
+  const words: TimedWord[] = [];
+  for (const item of raw) {
+    const o = obj(item);
+    if (!o) continue;
+    const word = str(o.word) ?? "";
+    const start = num(o.start);
+    const end = num(o.end);
+    if (!word || start == null || end == null) continue;
+    words.push({ start, end, word });
+  }
+  return words;
+}
+
 export function parseLocalSttResult(body: Record<string, unknown> | null): LocalSttResult {
   const durationSec = num(obj(body?.audio)?.duration_sec) ?? num(body?.duration_sec) ?? 0;
   const language = str(body?.language);
   const rawSegs = Array.isArray(body?.segments) ? body.segments : [];
-  const segments: SttSegment[] = [];
-  const transcript: TranscriptSegment[] = [];
+  const timed: TimedSttSegment[] = [];
   for (const item of rawSegs) {
     const o = obj(item);
     if (!o) continue;
@@ -473,13 +547,48 @@ export function parseLocalSttResult(body: Record<string, unknown> | null): Local
     const endSec = num(o.end) ?? atSec;
     const channel = num(o.channel) ?? 0;
     const speaker = str(o.speaker) ?? "";
-    const speakerTag = speakerToTag(speaker, channel);
-    segments.push({ atSec, endSec, speakerTag, text });
-    transcript.push({ atSec, speaker: speakerToLabel(speaker, channel), text });
+    const words = parseWords(o.words);
+    const firstWord = words[0]?.start;
+    timed.push({
+      atSec: firstWord ?? atSec,
+      endSec: words.length ? words[words.length - 1].end : endSec,
+      text,
+      avgLogprob: num(o.avg_logprob),
+      compressionRatio: num(o.compression_ratio),
+      words,
+      speaker: speakerToLabel(speaker, channel),
+      speakerTag: speakerToTag(speaker, channel),
+    });
   }
-  segments.sort((a, b) => a.atSec - b.atSec);
-  transcript.sort((a, b) => a.atSec - b.atSec);
-  return { segments, transcript, durationSec, language };
+  const prepared = prepareLocalSegments(timed);
+  const segments: SttSegment[] = [];
+  const transcript: TranscriptSegment[] = [];
+  const details: LocalSttSegmentDetail[] = [];
+  for (const seg of prepared) {
+    const speakerTag = seg.speakerTag ?? 1;
+    const speaker = seg.speaker || speakerToLabel("", speakerTag === 1 ? 1 : 0);
+    const wordAtSec = seg.words[0]?.start;
+    segments.push({ atSec: seg.atSec, endSec: seg.endSec, speakerTag, text: seg.text });
+    transcript.push({
+      atSec: seg.atSec,
+      wordAtSec: wordAtSec ?? seg.atSec,
+      speaker,
+      text: seg.text,
+    });
+    details.push({
+      atSec: seg.atSec,
+      endSec: seg.endSec,
+      speaker,
+      text: seg.text,
+      avgLogprob: seg.avgLogprob,
+      compressionRatio: seg.compressionRatio,
+    });
+  }
+  const order = (a: { atSec: number }, b: { atSec: number }) => a.atSec - b.atSec;
+  segments.sort(order);
+  transcript.sort(order);
+  details.sort(order);
+  return { segments, transcript, durationSec, language, details };
 }
 
 export function isTerminalSttStatus(status: string): boolean {

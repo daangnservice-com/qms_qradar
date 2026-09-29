@@ -1,6 +1,6 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "./auth";
-import { insertUsageEvent } from "./bigquery";
+import { insertUsageEvent } from "./usageEvents";
 
 // 기능 사용(액션)을 서버에서 기록한다. 액션이 실제로 성공한 핸들러에서 호출 —
 // 클라이언트 fire-and-forget보다 정확(탭 이탈로 유실되지 않음). 실패는 조용히 무시.

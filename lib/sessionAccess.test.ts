@@ -1,11 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
-  sessionCanAccessCallQuality,
-  sessionCanAccessCallQualityObserve,
-  sessionCanAccessAnyCallQuality,
-  sessionCanAccessOrg,
+  sessionCanAccessEvalProgress,
+  sessionCanAccessMonthlyReport,
+  sessionCanAccessQualityEval,
 } from "./sessionAccess";
-import { ensureSessionCanAccessCallQuality } from "./sessionAccessServer";
+import {
+  ensureSessionCanAccessEvalProgress,
+  ensureSessionCanAccessMonthlyReport,
+  ensureSessionCanAccessQualityEval,
+} from "./sessionAccessServer";
+import { MONTHLY_REPORT_GROUP_EMAILS } from "./adminEmails";
 import { clearGoogleGroupsCache } from "./googleGroups";
 
 vi.mock("./googleGroups", async (importOriginal) => {
@@ -19,55 +23,77 @@ vi.mock("./googleGroups", async (importOriginal) => {
 import { isMemberOfAnyGroup } from "./googleGroups";
 
 describe("sessionAccess", () => {
-  it("grants call quality from JWT flag for group members", () => {
+  it("평가 진행은 도메인 구성원이면 플래그 없이 열린다", () => {
+    const session = { user: { email: "anyone@daangnservice.com" } };
+    expect(sessionCanAccessEvalProgress(session)).toBe(true);
+    expect(sessionCanAccessQualityEval(session)).toBe(false);
+    expect(sessionCanAccessMonthlyReport(session)).toBe(false);
+  });
+
+  it("도메인 밖·세션 없음은 평가 진행 불가", () => {
+    expect(sessionCanAccessEvalProgress({ user: { email: "a@gmail.com" } })).toBe(false);
+    expect(sessionCanAccessEvalProgress(null)).toBe(false);
+  });
+
+  it("monthlyReport flag opens only the monthly report, not quality eval", () => {
     const session = {
       user: { email: "cx.lead@daangnservice.com" },
-      access: { callQuality: true },
+      access: { monthlyReport: true, qualityEval: false },
     };
-    expect(sessionCanAccessCallQuality(session)).toBe(true);
-    expect(sessionCanAccessCallQualityObserve(session)).toBe(true);
-    expect(sessionCanAccessAnyCallQuality(session)).toBe(true);
-    expect(sessionCanAccessOrg("growth", session)).toBe(true);
-    expect(sessionCanAccessOrg("pay", session)).toBe(false);
+    expect(sessionCanAccessMonthlyReport(session)).toBe(true);
+    expect(sessionCanAccessQualityEval(session)).toBe(false);
   });
 
-  it("falls back to personal whitelist when access flag missing", () => {
-    const session = { user: { email: "karla@daangnservice.com" } };
-    expect(sessionCanAccessCallQuality(session)).toBe(true);
-  });
-
-  it("denies when no flag and not on whitelist", () => {
+  it("qualityEval implies monthly report", () => {
     const session = {
-      user: { email: "stranger@daangnservice.com" },
-      access: { callQuality: false },
+      user: { email: "designer@daangnservice.com" },
+      access: { qualityEval: true, monthlyReport: false },
     };
-    expect(sessionCanAccessCallQuality(session)).toBe(false);
-    expect(sessionCanAccessCallQualityObserve(session)).toBe(false);
+    expect(sessionCanAccessQualityEval(session)).toBe(true);
+    expect(sessionCanAccessMonthlyReport(session)).toBe(true);
   });
 });
 
-describe("ensureSessionCanAccessCallQuality", () => {
+describe("sessionAccessServer", () => {
   beforeEach(() => {
     clearGoogleGroupsCache();
     vi.mocked(isMemberOfAnyGroup).mockReset();
   });
 
-  it("short-circuits on JWT true without Directory API", async () => {
-    const session = {
-      user: { email: "cx.lead@daangnservice.com" },
-      access: { callQuality: true },
-    };
-    await expect(ensureSessionCanAccessCallQuality(session)).resolves.toBe(true);
+  it("평가 진행은 Groups API를 부르지 않는다", async () => {
+    await expect(
+      ensureSessionCanAccessEvalProgress({ user: { email: "anyone@daangnservice.com" } }),
+    ).resolves.toBe(true);
     expect(isMemberOfAnyGroup).not.toHaveBeenCalled();
   });
 
-  it("falls through to Directory API when JWT false", async () => {
-    vi.mocked(isMemberOfAnyGroup).mockResolvedValue(true);
+  it("short-circuits on JWT true without Groups API", async () => {
     const session = {
       user: { email: "cx.lead@daangnservice.com" },
-      access: { callQuality: false },
+      access: { monthlyReport: true, qualityEval: false },
     };
-    await expect(ensureSessionCanAccessCallQuality(session)).resolves.toBe(true);
-    expect(isMemberOfAnyGroup).toHaveBeenCalled();
+    await expect(ensureSessionCanAccessMonthlyReport(session)).resolves.toBe(true);
+    expect(isMemberOfAnyGroup).not.toHaveBeenCalled();
+  });
+
+  it("L5 group member gets monthly report but not quality eval", async () => {
+    vi.mocked(isMemberOfAnyGroup).mockImplementation(async (_email, groups) =>
+      groups.some((g) => MONTHLY_REPORT_GROUP_EMAILS.includes(g)),
+    );
+    const session = {
+      user: { email: "cx.lead@daangnservice.com" },
+      access: { monthlyReport: false, qualityEval: false },
+    };
+    await expect(ensureSessionCanAccessMonthlyReport(session)).resolves.toBe(true);
+    await expect(ensureSessionCanAccessQualityEval(session)).resolves.toBe(false);
+  });
+
+  it("denies non-members", async () => {
+    vi.mocked(isMemberOfAnyGroup).mockResolvedValue(false);
+    const session = {
+      user: { email: "stranger@daangnservice.com" },
+      access: { monthlyReport: false, qualityEval: false },
+    };
+    await expect(ensureSessionCanAccessMonthlyReport(session)).resolves.toBe(false);
   });
 });

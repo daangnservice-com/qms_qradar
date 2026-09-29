@@ -9,7 +9,8 @@
 // │  dev  → data-proj-470202.ds_qradar_dev                          │
 // │  prod → data-proj-470202.ds_qradar_prod                         │
 // │                                                                │
-// │  입력(공유): cases / criteria 뷰는 ds_growth_culture 유지        │
+// │  입력(공유): criteria / Train / QMS 뷰는 ds_growth_culture 유지  │
+// │  샘플 풀(_flat)은 qradar 적재 데이터셋 (BQ_TARGET)                │
 // └────────────────────────────────────────────────────────────────┘
 //
 // env가 있으면 env 우선.
@@ -61,7 +62,7 @@ const PROJECT = env(
   env("GOOGLE_CLOUD_PROJECT_ID", "data-proj-470202"),
 );
 
-/** 공유 입력(케이스·기준 뷰)이 있는 데이터셋 — 타겟과 무관. */
+/** 공유 입력(기준·Train·QMS 뷰)이 있는 데이터셋 — 타겟과 무관. */
 const SHARED_DATASET = env("EVAL_SHARED_DATASET", env("EVAL_RESULTS_DATASET", "ds_growth_culture"));
 const SHARED_LOCATION = envOpt("GROWTH_CULTURE_LOCATION"); // 미설정 → auto-detect
 
@@ -104,8 +105,9 @@ export const promptBq = {
   sql: (table: string) => sqlFq(PROJECT, QRADAR_DATASET, table),
 } as const;
 
-// ─── 콜 평가 (입력=공유 데이터셋, 결과=qradar 데이터셋) ───────────
-const CASES_DATASET_TABLE = env("EVAL_CASES_TABLE", `${SHARED_DATASET}.qradar_evaluation_cases`);
+// 콜 평가 (샘플 풀=_flat 은 qradar 적재 데이터셋, 기준/Train 뷰는 공유)
+// 샘플 풀은 JSON case_content 가 아니라 컬럼 적재 테이블. 구 경로로 되돌리려면 env.
+const CASES_DATASET_TABLE = env("EVAL_CASES_TABLE", `${QRADAR_DATASET}.qradar_evaluation_cases_flat`);
 /** 통합 AI 평가 결과 (call_eval + qa_eval). org 컬럼으로 growth/pay 구분. */
 const RESULTS_TABLE = qradarTable(env("EVAL_RESULTS_TABLE", "qradar_evaluation_results"));
 /** @deprecated pay도 통합 테이블 org='pay' 사용. 하위호환 별칭. */
@@ -137,7 +139,7 @@ export const growthBq = {
   projectId: PROJECT,
   /** 결과·QA·LLM 로그가 적재되는 데이터셋 (= qradar target) */
   dataset: QRADAR_DATASET,
-  /** 공유 입력 데이터셋 (cases / criteria) */
+  /** 공유 입력 데이터셋 (criteria / Train / QMS 뷰) */
   sharedDataset: SHARED_DATASET,
   location: QRADAR_LOCATION,
   sharedLocation: SHARED_LOCATION,
@@ -150,6 +152,8 @@ export const growthBq = {
   llmCallLogs: qradarTable("llm_call_logs"),
   sttCallLogs: qradarTable("stt_call_logs"),
   evalHumanReviews: qradarTable("eval_human_reviews"),
+  /** STT 이상현상 리포팅 (append-only) */
+  sttIssueReports: qradarTable("stt_issue_reports"),
   evalReviewClaims: qradarTable("eval_review_claims"),
   /** 수기 검수 완료 이벤트 (얇은 append — 결과 JSON 복사 없음) */
   evalReviewCompletions: qradarTable("eval_review_completions"),
@@ -187,9 +191,20 @@ export const growthBq = {
  */
 const KARROT_CS_PROJECT = env("KARROT_CS_PROJECT", "karrotmarket");
 const KARROT_CS_DATASET = env("KARROT_CS_DATASET", "db_karrot_cs_kr");
-const FEEDBACK_SOURCE_VIEW = env(
-  "FEEDBACK_SOURCE_VIEW",
-  "team_operation.vw_feedback_thread_aggregation",
+/**
+ * 인앱 문의 스레드 집계 원천.
+ * `vw_feedback_thread_aggregation`(뷰) → `feedback_thread_aggregation`(물질 테이블)로 전환.
+ * 뷰는 조회 1회당 약 6.9GB 를 스캔해서 목록/필터마다 치기엔 비쌌다. 이제 뷰 옆에 같은
+ * 43컬럼 테이블을 두고 일 1회 MERGE 로 채운다 — scripts/bq/feedback_thread_aggregation.sql.
+ * 뷰는 그대로 남아 있어서 env 로 되돌릴 수 있지만, 뷰에는 파티션 키 `feedback_date_kst`
+ * 가 없다. 되돌릴 땐 아래 `dateColumn` 도 같이 뷰 기준 식으로 바꿔야 날짜 필터가 산다.
+ */
+// 옛 `FEEDBACK_SOURCE_VIEW` 는 일부러 폴백으로 받지 않는다. 배포 env 에 그 값이 남아
+// 있으면 앱이 조용히 뷰를 보게 되는데, 뷰에는 파티션 키 feedback_date_kst 가 없어서
+// 날짜 필터가 걸린 목록 쿼리가 바로 터진다. 되돌릴 땐 FEEDBACK_SOURCE_TABLE 로 명시할 것.
+const FEEDBACK_SOURCE_TABLE = env(
+  "FEEDBACK_SOURCE_TABLE",
+  "team_operation.feedback_thread_aggregation",
 );
 
 export const karrotCsBq = {
@@ -198,17 +213,26 @@ export const karrotCsBq = {
   sql: (table: string) => `\`${KARROT_CS_PROJECT}.${KARROT_CS_DATASET}.${table}\``,
 } as const;
 
-/** 인앱 문의(feedback) 원천. 집계 뷰라서 앱에서 무제한 조회하지 않는다. */
+/**
+ * 결과 행에 저장되는 원천 식별자 (`channel + source_system + source_id`).
+ * 물리 테이블 경로에서 파생시키지 않는다 — 테이블 이름을 바꿀 때마다 이미 저장된
+ * 평가 결과를 못 찾게 되기 때문. 경로가 또 바뀌어도 이 상수는 건드리지 말 것.
+ */
+export const FEEDBACK_SOURCE_SYSTEM = "karrotmarket.team_operation.feedback_thread_aggregation";
+
+/** 인앱 문의(feedback) 원천. 일 1회 MERGE 되는 집계 테이블. */
 export const feedbackBq = {
   projectId: env("FEEDBACK_PROJECT", KARROT_CS_PROJECT),
   location: envOpt("FEEDBACK_LOCATION") ?? "US",
-  sourceView: FEEDBACK_SOURCE_VIEW,
-  sourceSql: () => `\`${env("FEEDBACK_PROJECT", KARROT_CS_PROJECT)}.${FEEDBACK_SOURCE_VIEW}\``,
-  snapshotTable: qradarTable(env("FEEDBACK_SNAPSHOT_TABLE", "evaluation_feedback_items")),
+  sourceTable: FEEDBACK_SOURCE_TABLE,
+  sourceSql: () => `\`${env("FEEDBACK_PROJECT", KARROT_CS_PROJECT)}.${FEEDBACK_SOURCE_TABLE}\``,
+  /** 파티션 키. 날짜 필터는 이 컬럼으로 걸어야 프루닝이 걸린다. */
+  dateColumn: "feedback_date_kst",
 } as const;
 
 /**
- * CSAT(고객 설문) 원천. 전화 문의는 inquiry_type='PhoneInquiry' + inquiry_id = 상담이력 ID로 매핑.
+ * CSAT(고객 설문) 원천. 전화는 inquiry_type='PhoneInquiry' + inquiry_id = 상담이력 ID.
+ * 인앱 문의는 집계 뷰의 csat_id 로 같은 원천을 읽는다.
  * 중복 응답이 섞여 있어 항상 dup_no = 1만 쓴다.
  * choices 테이블은 choice_* 컬럼의 한글 라벨 사전(거의 바뀌지 않음).
  */
@@ -296,6 +320,7 @@ export const QRADAR_WRITABLE_TABLES = {
   llmCallLogs: growthBq.llmCallLogs,
   sttCallLogs: growthBq.sttCallLogs,
   evalHumanReviews: growthBq.evalHumanReviews,
+  sttIssueReports: growthBq.sttIssueReports,
   evalSetCriteria: growthBq.evalSetCriteria,
   evalCriterionResults: growthBq.evalCriterionResults,
 } as const;

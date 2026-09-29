@@ -1,0 +1,19 @@
+# 로컬 프로덕션 서빙 DB. RDS로 옮길 때는 SERVING_DATABASE_URL만 바꾼다.
+services:
+  postgres:
+    image: postgres:16
+    container_name: qradar-postgres
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: qradar
+      POSTGRES_PASSWORD: qradar
+      POSTGRES_DB: qradar
+    volumes:
+      - ./.data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qradar -d qradar"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

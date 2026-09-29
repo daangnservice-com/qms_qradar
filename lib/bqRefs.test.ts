@@ -46,9 +46,10 @@ describe("bqRefs — dataset split + qradar_ prefix", () => {
     expect(DIST_SHEET_TO_TABLE["재직자_RAW"]).toBe("hrEmployees");
   });
 
-  it("shared inputs stay on growth culture (not qradar target)", () => {
+  it("criteria/Train stay on growth culture; cases_flat follows qradar target", () => {
     expect(growthBq.sharedDataset).toMatch(/growth|culture|ds_/);
-    expect(growthBq.casesDatasetTable).not.toMatch(/ds_qradar_/);
+    expect(growthBq.casesDatasetTable).toMatch(/ds_qradar_/);
+    expect(growthBq.casesDatasetTable).toContain("qradar_evaluation_cases_flat");
     expect(growthBq.criteriaView).not.toMatch(/ds_qradar_/);
     expect(growthBq.qmsCasesDetailView).toContain("vw_quality_evaluation_cases_detail_with_fallback");
     expect(growthBq.qaReferencesMinYearMonth).toMatch(/^\d{4}-\d{2}-\d{2}$/);

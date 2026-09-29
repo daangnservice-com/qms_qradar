@@ -12,6 +12,11 @@ export type HighRiskFlagOption = { key: string; label: string };
 
 export const CSAT_RATE_VALUES = [1, 2, 3, 4, 5] as const;
 
+/** 채널마다 해당하지 않는 칸이 있어서(인앱 문의는 STT·고위험군·수기검수 없음) 노출 구간을 고른다. */
+export type QuickFilterSection = "analyzed" | "highRisk" | "csat" | "stt" | "review";
+
+const ALL_SECTIONS: QuickFilterSection[] = ["analyzed", "highRisk", "csat", "stt", "review"];
+
 function ToggleSwitch({
   label,
   checked,
@@ -78,28 +83,31 @@ function MultiChip({
   );
 }
 
-/** 녹취 선정 패널 상단 — AI평가·고위험군·CSAT·STT·수기검수 (필터 아코디언 밖 상시 노출) */
+/** 샘플 선정 패널 상단 — AI평가·고위험군·CSAT·STT·수기검수 (필터 아코디언 밖 상시 노출) */
 export default function SampleListQuickFilters({
   analyzedOnly,
-  highRiskOnly,
-  highRiskFlagKeys,
-  highRiskOptions,
+  highRiskOnly = false,
+  highRiskFlagKeys = [],
+  highRiskOptions = [],
   csatRates,
   csatIncludeNone,
-  sttStatus,
-  reviewStatus,
+  sttStatus = "",
+  reviewStatus = "",
+  sections = ALL_SECTIONS,
   disabled,
   onChange,
 }: {
   analyzedOnly: boolean;
-  highRiskOnly: boolean;
+  highRiskOnly?: boolean;
   /** 개별 선택된 플래그 키. 비면 「전체 고위험군」 */
-  highRiskFlagKeys: string[];
-  highRiskOptions: HighRiskFlagOption[];
+  highRiskFlagKeys?: string[];
+  highRiskOptions?: HighRiskFlagOption[];
   csatRates: number[];
   csatIncludeNone: boolean;
-  sttStatus: SttFilterState;
-  reviewStatus: ReviewFilterState;
+  sttStatus?: SttFilterState;
+  reviewStatus?: ReviewFilterState;
+  /** 렌더할 구간. 기본은 전부(전화 채널). */
+  sections?: QuickFilterSection[];
   disabled?: boolean;
   onChange: (patch: {
     analyzedOnly?: boolean;
@@ -128,39 +136,45 @@ export default function SampleListQuickFilters({
     onChange({ csatRates: next });
   };
 
+  const shows = (section: QuickFilterSection) => sections.includes(section);
+
   return (
     <div className="space-y-2">
-      <div className="grid grid-cols-2 gap-1.5">
-        <ToggleSwitch
-          label="AI평가"
-          checked={analyzedOnly}
-          disabled={disabled}
-          onChange={(v) => onChange({ analyzedOnly: v })}
-        />
-        <div className="flex min-w-0 flex-1 items-stretch gap-1">
+      <div className={`grid gap-1.5 ${shows("analyzed") && shows("highRisk") ? "grid-cols-2" : "grid-cols-1"}`}>
+        {shows("analyzed") && (
           <ToggleSwitch
-            label="고위험군"
-            checked={highRiskActive}
+            label="AI평가"
+            checked={analyzedOnly}
             disabled={disabled}
-            onChange={(v) =>
-              // 끄면 개별 선택도 함께 해제한다.
-              onChange(v ? { highRiskOnly: true } : { highRiskOnly: false, highRiskFlagKeys: [] })
-            }
+            onChange={(v) => onChange({ analyzedOnly: v })}
           />
-          <button
-            type="button"
-            aria-expanded={open}
-            aria-label="고위험군 항목 펼치기"
-            disabled={disabled}
-            onClick={() => setOpen((v) => !v)}
-            className="flex w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-muted)] text-[var(--fg-tertiary)] transition hover:bg-[var(--bg-canvas)] hover:text-[var(--fg-primary)] disabled:opacity-50"
-          >
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
-          </button>
-        </div>
+        )}
+        {shows("highRisk") && (
+          <div className="flex min-w-0 flex-1 items-stretch gap-1">
+            <ToggleSwitch
+              label="고위험군"
+              checked={highRiskActive}
+              disabled={disabled}
+              onChange={(v) =>
+                // 끄면 개별 선택도 함께 해제한다.
+                onChange(v ? { highRiskOnly: true } : { highRiskOnly: false, highRiskFlagKeys: [] })
+              }
+            />
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-label="고위험군 항목 펼치기"
+              disabled={disabled}
+              onClick={() => setOpen((v) => !v)}
+              className="flex w-7 shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-muted)] text-[var(--fg-tertiary)] transition hover:bg-[var(--bg-canvas)] hover:text-[var(--fg-primary)] disabled:opacity-50"
+            >
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`} />
+            </button>
+          </div>
+        )}
       </div>
 
-      {open && (
+      {shows("highRisk") && open && (
         <div className="space-y-1 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-subtle)] p-2">
           <span className="block text-[10px] font-medium text-[var(--fg-tertiary)]">
             고위험군 항목 {highRiskFlagKeys.length > 0 ? "(선택 중 하나라도)" : "(전체)"}
@@ -193,6 +207,7 @@ export default function SampleListQuickFilters({
         </div>
       )}
 
+      {shows("csat") && (
       <div className="space-y-1">
         <span className="block text-[10px] font-medium text-[var(--fg-tertiary)]">CSAT</span>
         <div className="flex flex-wrap gap-1">
@@ -213,7 +228,9 @@ export default function SampleListQuickFilters({
           />
         </div>
       </div>
+      )}
 
+      {shows("stt") && (
       <div className="space-y-1">
         <span className="block text-[10px] font-medium text-[var(--fg-tertiary)]">STT</span>
         <Chip.RadioRoot
@@ -239,6 +256,9 @@ export default function SampleListQuickFilters({
           </div>
         </Chip.RadioRoot>
       </div>
+      )}
+
+      {shows("review") && (
       <div className="space-y-1">
         <span className="block text-[10px] font-medium text-[var(--fg-tertiary)]">수기검수</span>
         <Chip.RadioRoot
@@ -264,6 +284,7 @@ export default function SampleListQuickFilters({
           </div>
         </Chip.RadioRoot>
       </div>
+      )}
     </div>
   );
 }

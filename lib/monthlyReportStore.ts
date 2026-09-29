@@ -1,5 +1,5 @@
-import { getBQ } from "./bigquery";
-import { growthBq } from "./bqRefs";
+// 월간 품질 리포트. 케이스는 서빙 Postgres(qms_cases, 야간 갱신)에서 읽는다.
+import { servingQuery } from "./servingDb";
 import { loadCsChecklist } from "./csChecklistLoad";
 import {
   buildMonthsFromCases,
@@ -16,14 +16,6 @@ import type {
   MonthlyCaseRow,
   MonthlyReportResponse,
 } from "./monthlyReportTypes";
-
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
-
-function viewSql(): string {
-  const sql = growthBq.qmsCasesDetailSql();
-  if (!sql) throw new Error("QMS_CASES_DETAIL_VIEW 가 설정되지 않았습니다");
-  return sql;
-}
 
 function cellStr(v: unknown): string {
   if (v == null) return "";
@@ -44,22 +36,18 @@ function parseYearMonth(raw: string | undefined): string | null {
   return /^\d{4}-\d{2}$/.test(s) ? s : null;
 }
 
-const TEAM_EXPR = `COALESCE(NULLIF(TRIM(team_name), ''), NULLIF(TRIM(fallback_current_team_name), ''), CAST(team_id AS STRING), '미지정')`;
-const MEMBER_KEY_EXPR = `COALESCE(NULLIF(TRIM(employee_number), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(first_name), ''), '미지정')`;
-const MEMBER_LABEL_EXPR = `COALESCE(NULLIF(TRIM(first_name), ''), CAST(target_admin_user_id AS STRING), NULLIF(TRIM(employee_number), ''), '미지정')`;
+const TEAM_EXPR = `coalesce(nullif(trim(team_name), ''), nullif(trim(fallback_current_team_name), ''), team_id::text, '미지정')`;
+const MEMBER_KEY_EXPR = `coalesce(nullif(trim(employee_number), ''), target_admin_user_id::text, nullif(trim(first_name), ''), '미지정')`;
+const MEMBER_LABEL_EXPR = `coalesce(nullif(trim(first_name), ''), target_admin_user_id::text, nullif(trim(employee_number), ''), '미지정')`;
 
 async function listMonths(): Promise<string[]> {
-  const v = viewSql();
-  const [rows] = await getBQ().query({
-    query: `
-      SELECT DISTINCT FORMAT_DATE('%Y-%m', year_month) AS v
-      FROM ${v}
-      WHERE year_month IS NOT NULL
-      ORDER BY v
-    `,
-    ...loc(),
-  });
-  return ((rows as { v: string }[]) || []).map((r) => String(r.v)).filter(Boolean);
+  const rows = await servingQuery<{ v: string }>(`
+    select distinct to_char(year_month, 'YYYY-MM') as v
+    from qms_cases
+    where year_month is not null
+    order by v
+  `);
+  return rows.map((r) => String(r.v)).filter(Boolean);
 }
 
 function mapCaseRow(raw: Record<string, unknown>): MonthlyCaseRow {
@@ -77,27 +65,25 @@ function mapCaseRow(raw: Record<string, unknown>): MonthlyCaseRow {
 }
 
 async function loadCases(): Promise<MonthlyCaseRow[]> {
-  const v = viewSql();
-  const [rows] = await getBQ().query({
-    query: `
-      SELECT
-        FORMAT_DATE('%Y-%m', year_month) AS month_key,
-        ${TEAM_EXPR} AS team_label,
-        ${MEMBER_KEY_EXPR} AS member_key,
-        ${MEMBER_LABEL_EXPR} AS member_label,
-        COALESCE(NULLIF(TRIM(template_name), ''), CAST(evaluation_template_id AS STRING), '미지정') AS template_name,
-        LOWER(TRIM(IFNULL(NULLIF(TRIM(case_result), ''), IFNULL(result, '')))) AS case_result,
-        LOWER(TRIM(IFNULL(result, ''))) AS target_result,
-        score_detail,
-        memo_detail
-      FROM ${v}
-      WHERE year_month IS NOT NULL
-        AND LOWER(IFNULL(status, '')) = 'evaluated'
-        AND LOWER(IFNULL(case_status, '')) = 'evaluated'
-    `,
-    ...loc(),
-  });
-  return ((rows as Record<string, unknown>[]) || []).map(mapCaseRow);
+  const rows = await servingQuery<Record<string, unknown>>(`
+    select
+      to_char(year_month, 'YYYY-MM') as month_key,
+      ${TEAM_EXPR} as team_label,
+      ${MEMBER_KEY_EXPR} as member_key,
+      ${MEMBER_LABEL_EXPR} as member_label,
+      coalesce(nullif(trim(template_name), ''), evaluation_template_id::text, '미지정') as template_name,
+      lower(trim(coalesce(nullif(trim(case_result), ''), coalesce(result, '')))) as case_result,
+      lower(trim(coalesce(result, ''))) as target_result,
+      score_detail,
+      memo_detail
+    from qms_cases
+    where year_month is not null
+      and lower(coalesce(status, '')) = 'evaluated'
+      and lower(coalesce(case_status, '')) = 'evaluated'
+    order by year_month, case_id
+  `);
+  // 채널별 대상 판정은 마지막 행이 이긴다. 순서를 고정해 새로고침마다 바뀌지 않게 한다.
+  return rows.map(mapCaseRow);
 }
 
 function monthsAsc(byYm: Record<string, MonthAgg>): MonthAgg[] {

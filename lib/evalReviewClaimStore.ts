@@ -1,16 +1,5 @@
-import { getBQ } from "./bigquery";
-import { growthBq, qradarTable } from "./bqRefs";
+import { getServingPool } from "./servingDb";
 import { handleOf, sameEmail, type EvalReviewClaim } from "./evalReviewClaim";
-import { isEvalItemKeyV2, phoneIdEqSql, phoneIdInSql, phoneScopeParams } from "./evalItemKey";
-import { EVAL_REVIEW_CLAIMS_V2_SCHEMA } from "./evalSchemaV2";
-import { PHONE_SOURCE_SYSTEM } from "./evaluationChannel";
-import {
-  applyClaimOverlayToActiveMap,
-  hydrateClaim,
-  mergeClaimLatest,
-  mergeMyActiveClaimIds,
-  rememberClaim,
-} from "./evalReviewClaimCache";
 
 export { handleOf, sameEmail, type EvalReviewClaim } from "./evalReviewClaim";
 
@@ -23,223 +12,121 @@ export class ReviewClaimConflictError extends Error {
   }
 }
 
-const TABLE = qradarTable("eval_review_claims");
-const loc = () => (growthBq.location ? { location: growthBq.location } : {});
-const claimTable = () =>
-  getBQ().dataset(growthBq.dataset, { projectId: growthBq.projectId }).table(TABLE);
+type LatestClaimRow = EvalReviewClaim & { active: boolean };
 
-const SCHEMA = [
-  { name: "conversation_id", type: "STRING", mode: "REQUIRED" },
-  { name: "claimed_by", type: "STRING", mode: "REQUIRED" },
-  { name: "claimed_at", type: "TIMESTAMP", mode: "REQUIRED" },
-  { name: "active", type: "BOOLEAN", mode: "REQUIRED" },
-] as const;
-
-const isAlreadyExists = (e: unknown) =>
-  (e as { code?: number })?.code === 409 || /already exists/i.test(e instanceof Error ? e.message : String(e));
-
-let _ensured: Promise<void> | null = null;
-
-export function ensureEvalReviewClaimTable(): Promise<void> {
-  if (!_ensured) {
-    _ensured = (async () => {
-      const bq = getBQ();
-      const ds = bq.dataset(growthBq.dataset, { projectId: growthBq.projectId });
-      const [dsExists] = await ds.exists();
-      if (!dsExists) {
-        await ds.create({ location: growthBq.location ?? "US" }).catch((e) => {
-          if (!isAlreadyExists(e)) throw e;
-        });
-      }
-      const t = ds.table(TABLE);
-      const [exists] = await t.exists();
-      if (!exists) {
-        await t
-          .create({
-            schema: EVAL_REVIEW_CLAIMS_V2_SCHEMA,
-            timePartitioning: { type: "DAY", field: "claimed_at" },
-            clustering: { fields: ["channel", "source_id"] },
-          })
-          .catch((e) => {
-            if (!isAlreadyExists(e)) throw e;
-          });
-      }
-    })().catch((e) => {
-      _ensured = null;
-      throw e;
-    });
-  }
-  return _ensured;
-}
-
-function tsValue(v: unknown): string {
-  if (v && typeof v === "object" && "value" in (v as object)) {
-    return String((v as { value: string }).value);
-  }
-  return String(v ?? "");
-}
-
-function rowToClaim(r: Record<string, unknown>): EvalReviewClaim | null {
-  const conversationId = String(r.conversation_id ?? r.source_id ?? "").trim();
-  const claimedBy = String(r.claimed_by ?? "").trim();
-  if (!conversationId || !claimedBy) return null;
+function toClaim(r: { conversation_id: string; claimed_by: string; claimed_at: Date | string; active: boolean }): LatestClaimRow {
+  const claimedAt = r.claimed_at instanceof Date ? r.claimed_at.toISOString() : String(r.claimed_at);
   return {
-    conversationId,
-    claimedBy,
-    claimedAt: tsValue(r.claimed_at),
+    conversationId: r.conversation_id,
+    claimedBy: r.claimed_by,
+    claimedAt,
+    active: r.active === true,
   };
 }
 
-async function insertClaimRow(input: {
+async function writeClaim(input: {
   conversationId: string;
   claimedBy: string;
   active: boolean;
 }): Promise<EvalReviewClaim> {
-  await ensureEvalReviewClaimTable();
   const claimedAt = new Date().toISOString();
-  await claimTable().insert(
-    [
-      (await isEvalItemKeyV2())
-        ? {
-            channel: "phone",
-            source_system: PHONE_SOURCE_SYSTEM,
-            source_id: input.conversationId,
-            claimed_by: input.claimedBy,
-            claimed_at: claimedAt,
-            active: input.active,
-          }
-        : {
-            conversation_id: input.conversationId,
-            claimed_by: input.claimedBy,
-            claimed_at: claimedAt,
-            active: input.active,
-          },
-    ],
-    { skipInvalidRows: true, ignoreUnknownValues: true },
-  );
-  const row: EvalReviewClaim = {
-    conversationId: input.conversationId,
-    claimedBy: input.claimedBy,
-    claimedAt,
-  };
-  rememberClaim({ ...row, active: input.active });
-  return row;
+  const pool = getServingPool();
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    await client.query(
+      `
+      insert into serving_review_claims (conversation_id, claimed_by, claimed_at, active, exported_at)
+      values ($1, $2, $3::timestamptz, $4, null)
+      on conflict (conversation_id) do update set
+        claimed_by = excluded.claimed_by,
+        claimed_at = excluded.claimed_at,
+        active = excluded.active,
+        exported_at = null
+      `,
+      [input.conversationId, input.claimedBy, claimedAt, input.active],
+    );
+    await client.query(
+      `
+      insert into call_serving (conversation_id, review_claimed_by, review_claimed_at)
+      values ($1, case when $2::boolean then $3 else null end, case when $2::boolean then $4::timestamptz else null end)
+      on conflict (conversation_id) do update set
+        review_claimed_by = case when $2::boolean then excluded.review_claimed_by else null end,
+        review_claimed_at = case when $2::boolean then excluded.review_claimed_at else null end,
+        updated_at = now()
+      `,
+      [input.conversationId, input.active, input.claimedBy, claimedAt],
+    );
+    await client.query("commit");
+  } catch (e) {
+    await client.query("rollback");
+    throw e;
+  } finally {
+    client.release();
+  }
+  return { conversationId: input.conversationId, claimedBy: input.claimedBy, claimedAt };
 }
-
-type LatestClaimRow = EvalReviewClaim & { active: boolean };
 
 async function latestClaimRow(conversationId: string): Promise<LatestClaimRow | null> {
   const id = conversationId.trim();
   if (!id) return null;
-  await ensureEvalReviewClaimTable();
-  const sql = growthBq.resultsSql(TABLE);
-  let bq: LatestClaimRow | null = null;
-  const v2 = await isEvalItemKeyV2();
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${sql}
-        where ${phoneIdEqSql(v2, "conversation_id")}
-        order by claimed_at desc
-        limit 1
-      `,
-      params: { conversation_id: id, ...phoneScopeParams(v2) },
-      ...loc(),
-    });
-    const raw = (rows as Record<string, unknown>[])[0];
-    if (raw) {
-      const claim = rowToClaim(raw);
-      if (claim) bq = { ...claim, active: raw.active === true };
-    }
-  } catch (e) {
-    console.warn("[evalReviewClaimStore] latest fallback:", e instanceof Error ? e.message : e);
-  }
-  if (bq) hydrateClaim(bq);
-  return mergeClaimLatest(bq, id);
+  const res = await getServingPool().query(
+    `select conversation_id, claimed_by, claimed_at, active from serving_review_claims where conversation_id = $1`,
+    [id],
+  );
+  const raw = res.rows[0];
+  return raw ? toClaim(raw) : null;
 }
 
 export async function getActiveClaim(conversationId: string): Promise<EvalReviewClaim | null> {
   const latest = await latestClaimRow(conversationId);
-  return latest?.active ? { conversationId: latest.conversationId, claimedBy: latest.claimedBy, claimedAt: latest.claimedAt } : null;
+  return latest?.active
+    ? { conversationId: latest.conversationId, claimedBy: latest.claimedBy, claimedAt: latest.claimedAt }
+    : null;
 }
 
-/** conversation별 최신 행이 active 인 찜 */
 export async function listActiveClaimsByConversationIds(
   conversationIds: string[],
 ): Promise<Map<string, EvalReviewClaim>> {
   const ids = [...new Set(conversationIds.filter(Boolean))];
   const out = new Map<string, EvalReviewClaim>();
   if (!ids.length) return out;
-  await ensureEvalReviewClaimTable();
-  const sql = growthBq.resultsSql(TABLE);
-  const v2 = await isEvalItemKeyV2();
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select *
-        from ${sql}
-        where ${phoneIdInSql(v2, "ids")}
-        qualify row_number() over (partition by ${v2 ? "channel, source_system, source_id" : "conversation_id"} order by claimed_at desc) = 1
-      `,
-      params: { ids, ...phoneScopeParams(v2) },
-      ...loc(),
+  const res = await getServingPool().query(
+    `
+    select conversation_id, claimed_by, claimed_at, active
+    from serving_review_claims
+    where conversation_id = any($1::text[]) and active
+    `,
+    [ids],
+  );
+  for (const raw of res.rows) {
+    const claim = toClaim(raw);
+    out.set(claim.conversationId, {
+      conversationId: claim.conversationId,
+      claimedBy: claim.claimedBy,
+      claimedAt: claim.claimedAt,
     });
-    for (const raw of rows as Record<string, unknown>[]) {
-      const claim = rowToClaim(raw);
-      if (!claim) continue;
-      const active = raw.active === true;
-      hydrateClaim({ ...claim, active });
-      if (active) out.set(claim.conversationId, claim);
-    }
-  } catch (e) {
-    console.warn("[evalReviewClaimStore] listByIds fallback:", e instanceof Error ? e.message : e);
   }
-  return applyClaimOverlayToActiveMap(out);
+  return out;
 }
 
 export async function listActiveClaimConversationIdsBy(email: string, limit = 500): Promise<string[]> {
   const who = email.trim();
   if (!who) return [];
   const lim = Math.min(Math.max(1, Math.floor(limit)), 1000);
-  await ensureEvalReviewClaimTable();
-  const sql = growthBq.resultsSql(TABLE);
-  const v2 = await isEvalItemKeyV2();
-  const idCol = v2 ? "source_id" : "conversation_id";
-  try {
-    const [rows] = await getBQ().query({
-      query: `
-        select ${idCol} as conversation_id, claimed_by, claimed_at, active
-        from (
-          select ${idCol}, claimed_by, claimed_at, active,
-            row_number() over (partition by ${v2 ? "channel, source_system, source_id" : "conversation_id"} order by claimed_at desc) as rn
-          from ${sql}
-          where ${idCol} in (
-            select distinct ${idCol} from ${sql} where claimed_by = @email
-          )
-        )
-        where rn = 1
-        limit @lim
-      `,
-      params: { email: who, lim },
-      ...loc(),
-    });
-    const bqIds: string[] = [];
-    for (const raw of rows as Record<string, unknown>[]) {
-      const claim = rowToClaim(raw);
-      if (!claim) continue;
-      const active = raw.active === true;
-      hydrateClaim({ ...claim, active });
-      if (active && sameEmail(claim.claimedBy, who)) bqIds.push(claim.conversationId);
-    }
-    return mergeMyActiveClaimIds(who, bqIds).slice(0, lim);
-  } catch (e) {
-    console.warn("[evalReviewClaimStore] listMine fallback:", e instanceof Error ? e.message : e);
-    return mergeMyActiveClaimIds(who, []);
-  }
+  const res = await getServingPool().query(
+    `
+    select conversation_id
+    from serving_review_claims
+    where active and lower(claimed_by) = lower($1)
+    order by claimed_at desc
+    limit $2
+    `,
+    [who, lim],
+  );
+  return res.rows.map((r) => String(r.conversation_id));
 }
 
-/** 검수 찜하기. 이미 내가 찜한 경우 그대로 반환. 다른 구성원이 찜한 경우 conflict. */
 export async function claimReview(input: {
   conversationId: string;
   claimedBy: string;
@@ -259,13 +146,9 @@ export async function claimReview(input: {
       `이미 ${handleOf(latest.claimedBy)}님이 검수 진행 중입니다`,
     );
   }
-  return insertClaimRow({ conversationId, claimedBy, active: true });
+  return writeClaim({ conversationId, claimedBy, active: true });
 }
 
-/**
- * 검수 찜 해제.
- * force=true 이면 다른 구성원 찜도 해제(검수 완료 시).
- */
 export async function releaseReviewClaim(input: {
   conversationId: string;
   releasedBy: string;
@@ -283,5 +166,10 @@ export async function releaseReviewClaim(input: {
       `이미 ${handleOf(latest.claimedBy)}님이 검수 진행 중입니다`,
     );
   }
-  await insertClaimRow({ conversationId, claimedBy: releasedBy || latest.claimedBy, active: false });
+  await writeClaim({ conversationId, claimedBy: releasedBy || latest.claimedBy, active: false });
+}
+
+/** @deprecated 서빙 DB 스키마는 db/migrations 가 만든다. */
+export function ensureEvalReviewClaimTable(): Promise<void> {
+  return Promise.resolve();
 }

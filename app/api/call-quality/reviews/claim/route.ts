@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessCallQuality } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessEvalProgress } from "@/lib/sessionAccessServer";
 import {
   ReviewClaimConflictError,
   claimReview,
@@ -15,7 +15,7 @@ export const runtime = "nodejs";
 export async function POST(req: Request): Promise<Response> {
   const session = await getServerSession(authOptions);
   const email = session?.user?.email;
-  if (!await ensureSessionCanAccessCallQuality(session) || !email) {
+  if (!await ensureSessionCanAccessEvalProgress(session) || !email) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
 

@@ -2,14 +2,19 @@
 //
 // ⚠️ 서비스계정 키·OAuth 토큰은 레포에 두지 않는다.
 //    배포: 호스트/시크릿 매니저의 환경변수
-//    로컬: .env.local 또는 `gcloud auth application-default login`(ADC)
+//    로컬: sa/*.json, .env.local, 또는 `gcloud auth application-default login`(ADC)
 //
 // 클라이언트별:
 //   BigQuery / Speech — ADC 우선. Compute SA에는 교차 프로젝트 BQ·Speech 권한이 없을 수 있다.
-//   GCS               — GOOGLE_SERVICE_ACCOUNT_JSON 있으면 그 SA, 없으면 ADC.
-//   Groups            — 사용자 ADC면 직접 Directory 호출, SA면 DWD+impersonate.
+//   GCS / Groups      — SA 키 우선(아래 순서), 없으면 ADC.
+//   Groups            — Cloud Identity Groups API. SA면 DWD+impersonate, 사용자 ADC만 있으면 직접 호출.
+//
+// SA 키 탐색 순서:
+//   1) GOOGLE_SERVICE_ACCOUNT_FILE (경로)
+//   2) ./sa/*.json (로컬 키 폴더, gitignore)
+//   3) GOOGLE_SERVICE_ACCOUNT_JSON (env / .env.local)
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 function extractJsonObject(text: string, fromIdx: number): string | null {
@@ -70,11 +75,45 @@ function fromEnvFile(): object | undefined {
   return json ? parseSa(json) : undefined;
 }
 
+function readSaJsonFile(path: string): object | undefined {
+  if (!existsSync(path)) return undefined;
+  try {
+    return parseSa(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/** GOOGLE_SERVICE_ACCOUNT_FILE 또는 ./sa/*.json */
+function fromSaFileOrDir(): object | undefined {
+  const explicit = process.env.GOOGLE_SERVICE_ACCOUNT_FILE?.trim();
+  if (explicit) {
+    const path = resolve(process.cwd(), explicit);
+    const creds = readSaJsonFile(path);
+    if (creds) return creds;
+  }
+  const dir = resolve(process.cwd(), "sa");
+  if (!existsSync(dir)) return undefined;
+  const files = readdirSync(dir)
+    .filter((f) => f.toLowerCase().endsWith(".json"))
+    .sort();
+  for (const f of files) {
+    const creds = readSaJsonFile(resolve(dir, f));
+    if (creds) return creds;
+  }
+  return undefined;
+}
+
 let _cached: object | undefined | null = null;
 
 /** SA 키 객체가 있으면 반환, 없으면 undefined(→ ADC 위임). */
 export function gcpCredentials(): object | undefined {
   if (_cached !== null) return _cached ?? undefined;
+  const fromSaPath = fromSaFileOrDir();
+  if (fromSaPath) {
+    _cached = fromSaPath;
+    return fromSaPath;
+  }
   const fromEnv = parseSa(process.env.GOOGLE_SERVICE_ACCOUNT_JSON);
   if (fromEnv) {
     _cached = fromEnv;

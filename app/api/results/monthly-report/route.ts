@@ -1,7 +1,7 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessQualityEval } from "@/lib/sessionAccessServer";
+import { ensureSessionCanAccessMonthlyReport } from "@/lib/sessionAccessServer";
 import { getMonthlyQualityReport } from "@/lib/monthlyReportStore";
 
 export const runtime = "nodejs";
@@ -9,7 +9,7 @@ export const maxDuration = 60;
 
 export async function GET(req: Request) {
   const session = await getServerSession(authOptions);
-  if (!(await ensureSessionCanAccessQualityEval(session))) {
+  if (!(await ensureSessionCanAccessMonthlyReport(session))) {
     return NextResponse.json({ error: "권한이 없습니다" }, { status: 403 });
   }
   try {

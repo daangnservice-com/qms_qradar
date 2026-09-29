@@ -1,10 +1,10 @@
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { insertUsageEvent } from "@/lib/bigquery";
+import { insertUsageEvent } from "@/lib/usageEvents";
 
 export const runtime = "nodejs";
 
-// 페이지 조회 트래킹 수신부(pageview). 로그인 사용자의 화면 조회를 BigQuery(usage_events)에 적재.
+// 페이지 조회 트래킹 수신부(pageview). 로그인 사용자의 화면 조회를 서빙 DB에 적재(BQ usage_events 로는 야간 덤프).
 // 기능 사용(액션) 이벤트는 클라이언트가 아니라 각 API 핸들러에서 서버측으로 기록한다(lib/serverTrack.ts).
 // fire-and-forget: 어떤 경우에도 204로 응답해 클라이언트 UX를 막지 않는다.
 export async function POST(req: Request) {

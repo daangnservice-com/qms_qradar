@@ -12,6 +12,17 @@
 
 구현 시 Primary HTML의 `data-screen-label` 단위로 화면을 맞춘다.
 
+## 런타임 데이터
+
+위 표는 화면 레퍼런스다. 서버가 요청 중에 읽는 저장소는 따로다.
+
+| 역할 | 위치 |
+|---|---|
+| 서빙 원본 (콜·검수·인앱 문의 본문·전화 CSAT) | Postgres. [system/serving-db.md](system/serving-db.md) |
+| 데이터 원천·웨어하우스 덤프 | BigQuery `ds_qradar_dev` (`BQ_TARGET=dev`)와 공유 뷰 `ds_growth_culture` |
+
+인앱 문의 본문은 종결 후 안 바뀐다. CSAT은 완결 이후에도 도착하므로, Postgres에 넣을 때 본문과 따로 갱신한다.
+
 ## 운영 GAS (Sheets → BQ 이식 대상)
 
 | 역할 | 경로 | 문서 |

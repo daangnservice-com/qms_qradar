@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import { MessageSquareText, ChevronDown } from "lucide-react";
 import { formatClock } from "@/lib/format";
+import { seekSecForTranscript } from "@/lib/localSttQuality";
 import { maskPII } from "@/lib/pii";
 import type { TranscriptSegment } from "@/lib/types";
 
@@ -81,19 +82,20 @@ export default function Transcript({
         <div className="space-y-3 border-t border-gray-100 px-5 py-4">
           {segments.map((s, i) => {
             const isAgent = s.speaker.includes("상담");
+            const seekSec = seekSecForTranscript(s);
             return (
               <div key={i} className="flex gap-3">
                 {audioSrc ? (
                   <button
                     type="button"
-                    onClick={() => seekTo(s.atSec)}
+                    onClick={() => seekTo(seekSec)}
                     title="이 시각으로 재생"
                     className="mt-0.5 w-11 shrink-0 text-left font-mono text-xs text-navy transition hover:underline"
                   >
-                    {formatClock(s.atSec)}
+                    {formatClock(seekSec)}
                   </button>
                 ) : (
-                  <span className="mt-0.5 w-11 shrink-0 font-mono text-xs text-gray-400">{formatClock(s.atSec)}</span>
+                  <span className="mt-0.5 w-11 shrink-0 font-mono text-xs text-gray-400">{formatClock(seekSec)}</span>
                 )}
                 <div className="min-w-0">
                   {s.speaker && (

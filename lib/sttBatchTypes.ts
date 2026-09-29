@@ -1,5 +1,14 @@
 /** 로컬 STT 서버 배치 큐 — 평가 진행(온디맨드 GCP STT)과 분리. */
 
+/** 평가 진행에서 넣은 잡. 스케줄 목록에는 안 보인다. */
+export const ONDEMAND_SCHEDULE_ID = "__ondemand__";
+/** 배치(기본 0)보다 앞. 실행 중인 잡은 끊지 않고, 큐에서 다음으로 뽑힌다. */
+export const ONDEMAND_STT_PRIORITY = 100;
+/** 이슈 리포트 재처리. 온디맨드보다 앞이라 대기 중인 잡 중 먼저 뽑힌다. */
+export const ISSUE_REPROCESS_STT_PRIORITY = 200;
+/** 매일 자동으로 돌리지 않는 재처리 스케줄. 화면 목록에는 보인다. */
+export const ISSUE_REPROCESS_SCHEDULE_NAME = "이슈 리포트 재처리";
+
 export type SttBatchJobStatus =
   | "pending_upload"
   | "queued"
@@ -51,6 +60,10 @@ export type SttBatchJob = {
   progress: number | null;
   stage: string | null;
   segmentCount: number | null;
+  /** 클수록 로컬 STT 큐에서 먼저. 없으면 0. */
+  priority?: number;
+  /** true면 원격 POST에 force=true. 같은 client_ref가 있어도 새 잡(재처리). */
+  skipReuse?: boolean;
   createdAt: string;
   updatedAt: string;
   queuedAt: string | null;
@@ -60,8 +73,8 @@ export type SttBatchJob = {
 export type SttBatchRun = {
   id: string;
   scheduleId: string;
-  /** 스케줄 tick vs 화면에서 바로 시작 */
-  trigger: "schedule" | "manual";
+  /** 스케줄 tick vs 배치 화면 vs 평가 진행 온디맨드 */
+  trigger: "schedule" | "manual" | "ondemand";
   callDate: string;
   status: SttBatchRunStatus;
   requestedBy: string | null;
@@ -123,6 +136,51 @@ export type SttBatchServerHealth = {
   currentJobId: string | null;
   error: string | null;
 };
+
+export function isInFlightSttStatus(status: SttBatchJobStatus): boolean {
+  return status === "pending_upload" || status === "queued" || status === "running";
+}
+
+export function localSttQueueLabel(status: SttBatchJobStatus): string {
+  switch (status) {
+    case "pending_upload":
+      return "로컬 STT 업로드 중";
+    case "queued":
+      return "로컬 STT 대기열";
+    case "running":
+      return "로컬 STT 전사 중";
+    case "done":
+      return "로컬 STT 완료";
+    case "failed":
+      return "로컬 STT 실패";
+    case "skipped":
+      return "로컬 STT 스킵";
+  }
+}
+
+export type LocalSttQueueView = {
+  conversationId: string;
+  status: SttBatchJobStatus;
+  progress: number | null;
+  stage: string | null;
+  error: string | null;
+  priority: number;
+  remoteJobId: string | null;
+  updatedAt: string;
+};
+
+export function toLocalSttQueueView(job: SttBatchJob): LocalSttQueueView {
+  return {
+    conversationId: job.conversationId,
+    status: job.status,
+    progress: job.progress,
+    stage: job.stage,
+    error: job.error,
+    priority: job.priority ?? 0,
+    remoteJobId: job.remoteJobId,
+    updatedAt: job.updatedAt,
+  };
+}
 
 export type SttBatchCandidate = {
   conversationId: string;

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { addDaysYmd, isScheduleDue, kstClock } from "./sttBatchKst";
+import { addDaysYmd, isRecurrenceDue, isScheduleDue, kstClock } from "./sttBatchKst";
 import { pickNPerAgent } from "./sttBatchSelect";
-import { pendingHarvestJobs, queuedConversationIds, summarizeAgents, summarizeScheduleStats } from "./sttBatchStore";
-import type { SttBatchJob } from "./sttBatchTypes";
+import { inFlightSttJobs, pendingHarvestJobs, queuedConversationIds, summarizeAgents, summarizeScheduleStats } from "./sttBatchStore";
+import { isInFlightSttStatus, localSttQueueLabel, ONDEMAND_STT_PRIORITY, type SttBatchJob } from "./sttBatchTypes";
 
 describe("sttBatchSelect pickNPerAgent", () => {
   const rows = [
@@ -61,6 +61,40 @@ describe("sttBatchKst", () => {
       }),
     ).toBe(false);
   });
+
+  it("isRecurrenceDue respects weekday and last run date", () => {
+    const monday = new Date("2026-09-14T10:00:00+09:00"); // 월
+    expect(
+      isRecurrenceDue({
+        enabled: true,
+        hour: 9,
+        minute: 0,
+        recurrence: { kind: "weekly", weekday: 1 },
+        lastRunDateKst: null,
+        now: monday,
+      }),
+    ).toBe(true);
+    expect(
+      isRecurrenceDue({
+        enabled: true,
+        hour: 9,
+        minute: 0,
+        recurrence: { kind: "weekly", weekday: 2 },
+        lastRunDateKst: null,
+        now: monday,
+      }),
+    ).toBe(false);
+    expect(
+      isRecurrenceDue({
+        enabled: true,
+        hour: 9,
+        minute: 0,
+        recurrence: { kind: "once" },
+        lastRunDateKst: "2026-09-01",
+        now: monday,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("sttBatchStore helpers", () => {
@@ -113,5 +147,20 @@ describe("sttBatchStore helpers", () => {
         { callDate: "2026-09-01", selected: 2, done: 1, failed: 1, inProgress: 0, skipped: 0 },
       ],
     });
+  });
+
+  it("inFlightSttJobs keeps queued/running/upload", () => {
+    const jobs = [
+      { status: "queued" },
+      { status: "running" },
+      { status: "pending_upload" },
+      { status: "done" },
+      { status: "failed" },
+    ] as SttBatchJob[];
+    expect(inFlightSttJobs(jobs).map((j) => j.status)).toEqual(["queued", "running", "pending_upload"]);
+    expect(isInFlightSttStatus("queued")).toBe(true);
+    expect(isInFlightSttStatus("done")).toBe(false);
+    expect(localSttQueueLabel("queued")).toContain("대기열");
+    expect(ONDEMAND_STT_PRIORITY).toBeGreaterThan(0);
   });
 });

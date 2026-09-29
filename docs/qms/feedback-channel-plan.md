@@ -71,7 +71,9 @@ channel + source_system + source_id
 
 ### C. 무거운 원천 뷰 운영 전환
 
-현재 샘플 분석 때문에 원천 뷰를 한 번 조회했다. 운영 목록 조회는 원천 뷰를 매번 직접 읽지 않고, `qradar_evaluation_feedback_items` 스냅샷 테이블을 주기적으로 적재한 뒤 그 테이블을 읽도록 전환한다.
+전환 완료. 운영 목록 조회는 원천 뷰를 매번 직접 읽지 않고, 뷰 옆에 만든 `karrotmarket.team_operation.feedback_thread_aggregation` 테이블을 읽는다. 적재는 `data-proj-470202` 에 등록한 일 1회 스케줄드 쿼리(`scripts/bq/feedback_thread_aggregation.sql`)가 MERGE 로 upsert 한다.
+
+뷰 직조회는 1회당 약 6.9GB 를 스캔했다. 원천 `feedbacks` / `feedback_replies` / `feedback_threads` 가 모두 비파티션이라 배치 자체의 스캔량은 줄지 않지만, 스캔 횟수가 조회당 1회에서 하루 1회로 바뀐다. 테이블은 `feedback_date_kst` 파티션 + `feedback_thread_id` 클러스터라 앱 조회는 훨씬 싸다.
 
 - 초기 수집: 최근 N일 + 변경 스레드 upsert
 - 보존: 평가 당시 원문 스냅샷은 결과 행에 마스킹된 형태로 보존

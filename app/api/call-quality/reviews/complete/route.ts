@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
-import { ensureSessionCanAccessOrg } from "@/lib/sessionAccessServer";
-import { orgFromParam } from "@/lib/callQualityOrg";
+import { ensureSessionCanAccessEvalProgress } from "@/lib/sessionAccessServer";
+import { CALL_EVAL_ORG } from "@/lib/callQualityOrg";
 import { markReviewComplete } from "@/lib/evalResultStore";
 import { releaseReviewClaim } from "@/lib/evalReviewClaimStore";
 
@@ -21,8 +21,8 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: "요청 형식이 올바르지 않습니다." }, { status: 400 });
   }
 
-  const org = orgFromParam(body.org);
-  if (!await ensureSessionCanAccessOrg(org, session)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const org = CALL_EVAL_ORG;
+  if (!await ensureSessionCanAccessEvalProgress(session)) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const conversationId = String(body.conversationId ?? "").trim();
   if (!conversationId) {

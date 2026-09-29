@@ -36,17 +36,21 @@ function EvidenceList({
         const atSec = coerceAtSec(e.atSec, { quote: e.quote, stt: sttHints });
         return (
           <li key={i} className="text-[11px] leading-snug text-[var(--fg-secondary)]">
-            <button
-              type="button"
-              className="font-mono text-[var(--info)] hover:underline"
-              title="해당 구간으로 이동"
-              onClick={(event) => {
-                event.stopPropagation();
-                onSeek?.(atSec);
-              }}
-            >
-              {formatClock(atSec)}
-            </button>{" "}
+            {onSeek ? (
+              <>
+                <button
+                  type="button"
+                  className="font-mono text-[var(--info)] hover:underline"
+                  title="해당 구간으로 이동"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onSeek(atSec);
+                  }}
+                >
+                  {formatClock(atSec)}
+                </button>{" "}
+              </>
+            ) : null}
             “{e.quote}”
           </li>
         );
