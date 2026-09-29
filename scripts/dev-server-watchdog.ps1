@@ -20,7 +20,7 @@
 
   로그: %LOCALAPPDATA%\helpdesk-x-watchdog\
     watchdog.log    - 워치독 자체 기록
-    dev-server.log  - npm run dev 의 stdout/stderr
+    dev-server.log  - npm run dev 의 stdout/stderr (줄마다 시각, URL 쿼리 시크릿은 ***)
 
 .EXAMPLE
   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-server-watchdog.ps1
@@ -206,7 +206,8 @@ function Start-DevServer {
   $header = "`r`n===== {0} watchdog restart =====" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
   Add-Content -Path $DevLogFile -Value $header -Encoding utf8
 
-  $cmdLine = '/c npm run dev >> "' + $DevLogFile + '" 2>&1'
+  # 줄마다 시각을 붙이고 URL 쿼리의 시크릿을 가린다(scripts/log-timestamp.cjs).
+  $cmdLine = '/c npm run dev 2>&1 | node scripts\log-timestamp.cjs >> "' + $DevLogFile + '"'
   Start-Process -FilePath 'cmd.exe' `
                 -ArgumentList $cmdLine `
                 -WorkingDirectory $ProjectRoot `
